@@ -8,21 +8,33 @@ import (
 	"strings"
 )
 
-// ghostHandler handles HTTP/2 requests from authenticated Ghost clients.
-// For Stage 2.2, this is an echo handler — real frame processing comes in Stage 2.3c.
+// ghostHandler handles HTTP/2 requests for an authenticated Ghost session.
+// POST requests carry upstream Ghost frames (client → server mux).
+// GET requests open a long-poll for downstream frames (server mux → client).
 type ghostHandler struct {
 	serverAuth   auth.ServerAuth
 	sharedSecret [32]byte
 	binding      []byte // TLS channel binding for token verification
+
+	upW   *io.PipeWriter // POST bodies written here → mux decoder
+	downR *io.PipeReader // mux encoder writes here → GET response
+
+	uploadPath   string // expected POST path
+	downloadPath string // expected GET path
 }
 
-// newGhostHandler creates an HTTP/2 handler with the ServerAuth,
-// per-client shared secret, and TLS channel binding for X-Session-Token validation.
-func newGhostHandler(sa auth.ServerAuth, secret [32]byte, binding []byte) *ghostHandler {
+// newGhostHandler creates an HTTP/2 handler wired to the mux pipes.
+// upW feeds POST bodies to the ServerMux decoder.
+// downR streams ServerMux encoder output to GET long-poll responses.
+func newGhostHandler(sa auth.ServerAuth, secret [32]byte, binding []byte, upW *io.PipeWriter, downR *io.PipeReader, uploadPath, downloadPath string) *ghostHandler {
 	return &ghostHandler{
 		serverAuth:   sa,
 		sharedSecret: secret,
 		binding:      binding,
+		upW:          upW,
+		downR:        downR,
+		uploadPath:   uploadPath,
+		downloadPath: downloadPath,
 	}
 }
 
@@ -48,26 +60,45 @@ func (h *ghostHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		h.handleGet(w, r)
 	default:
-		http.NotFound(w, r)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
-// handlePost echoes the request body back as the response.
+// handlePost copies the POST request body into the upstream pipe,
+// which feeds the ServerMux decoder with Ghost frames.
 func (h *ghostHandler) handlePost(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(r.Body)
+	_, err := io.Copy(h.upW, r.Body)
 	if err != nil {
-		slog.Warn("ghost: read POST body", "err", err, "remote", r.RemoteAddr)
-		http.Error(w, "Bad Request", http.StatusBadRequest)
+		slog.Warn("ghost: POST body copy", "err", err, "remote", r.RemoteAddr)
 		return
 	}
-	w.Header().Set("Content-Type", "application/octet-stream")
 	w.WriteHeader(http.StatusOK)
-	w.Write(body)
 }
 
-// handleGet writes a small acknowledgment response.
+// handleGet opens a long-poll response that streams downstream Ghost frames
+// from the ServerMux encoder to the client.
 func (h *ghostHandler) handleGet(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("ghost-ok\n"))
+	flusher.Flush()
+
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := h.downR.Read(buf)
+		if n > 0 {
+			if _, werr := w.Write(buf[:n]); werr != nil {
+				return // client disconnected
+			}
+			flusher.Flush()
+		}
+		if err != nil {
+			return // pipe closed or error
+		}
+	}
 }

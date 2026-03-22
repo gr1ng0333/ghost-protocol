@@ -17,11 +17,14 @@ import (
 	"log/slog"
 	"math/big"
 	"net"
+	"strconv"
 	"sync"
 	"time"
 
 	"ghost/internal/auth"
 	"ghost/internal/config"
+	"ghost/internal/framing"
+	"ghost/internal/mux"
 
 	"golang.org/x/net/http2"
 )
@@ -285,6 +288,7 @@ func (s *ghostServer) handleConn(ctx context.Context, conn *peekConn, chi *clien
 }
 
 // handleGhost performs the TLS handshake and serves HTTP/2 for authenticated Ghost clients.
+// It wires a ServerMux to the handler via io.Pipe pairs and starts a stream dispatch loop.
 func (s *ghostServer) handleGhost(ctx context.Context, conn *peekConn, chi *clientHelloInfo, sharedSecret [32]byte) {
 	tlsCfg := &tls.Config{
 		Certificates: []tls.Certificate{s.tlsCert},
@@ -304,9 +308,41 @@ func (s *ghostServer) handleGhost(ctx context.Context, conn *peekConn, chi *clie
 		tlsConn.Close()
 	}()
 
+	slog.Info("ghost: serving HTTP/2", "remote", conn.RemoteAddr())
+
+	// Derive channel binding for token verification.
+	cs := tlsConn.ConnectionState()
+	binding, err := cs.ExportKeyingMaterial(exporterLabel, nil, 32)
+	if err != nil {
+		slog.Warn("ghost: export keying material failed", "err", err, "remote", conn.RemoteAddr())
+		return
+	}
+
+	// Create pipes for mux ↔ handler communication.
+	upR, upW := io.Pipe()
+	downR, downW := io.Pipe()
+
+	// Create ServerMux: decodes frames from upR (POST bodies),
+	// encodes frames to downW (streamed via GET long-poll).
+	encoder := framing.NewEncoder(downW)
+	decoder := framing.NewDecoder(upR)
+	serverMux := mux.NewServerMux(encoder, decoder)
+
+	// Derive per-session paths.
+	uploadPath, downloadPath := mux.DerivePaths(sharedSecret)
+
+	// Create handler wired to pipes.
+	handler := newGhostHandler(s.serverAuth, sharedSecret, binding, upW, downR, uploadPath, downloadPath)
+
+	// Start stream dispatch loop.
+	go s.dispatchStreams(ctx, serverMux)
+
 	sess := &ghostSession{
 		id:         generateSessionID(),
 		remoteAddr: conn.RemoteAddr(),
+		serverMux:  serverMux,
+		upW:        upW,
+		downW:      downW,
 		done:       make(chan struct{}),
 	}
 
@@ -317,23 +353,59 @@ func (s *ghostServer) handleGhost(ctx context.Context, conn *peekConn, chi *clie
 		return
 	}
 
-	slog.Info("ghost: serving HTTP/2", "remote", conn.RemoteAddr(), "session", sess.id)
+	slog.Info("ghost: session established", "remote", conn.RemoteAddr(), "session", sess.id)
 
-	// Derive channel binding for token verification.
-	cs := tlsConn.ConnectionState()
-	binding, err := cs.ExportKeyingMaterial(exporterLabel, nil, 32)
-	if err != nil {
-		slog.Warn("ghost: export keying material failed", "err", err, "remote", conn.RemoteAddr())
-		return
-	}
+	defer func() {
+		serverMux.Close()
+		upW.Close()
+		upR.Close()
+		downW.Close()
+		downR.Close()
+		sess.Close()
+	}()
 
+	// Serve HTTP/2 (blocks until connection closes).
 	h2srv := &http2.Server{}
-	handler := newGhostHandler(s.serverAuth, sharedSecret, binding)
 	h2srv.ServeConn(tlsConn, &http2.ServeConnOpts{
 		Handler: handler,
 	})
+}
 
-	sess.Close()
+// dispatchStreams accepts streams from the ServerMux and dials destinations.
+func (s *ghostServer) dispatchStreams(ctx context.Context, smux mux.ServerMux) {
+	for {
+		stream, dest, err := smux.Accept(ctx)
+		if err != nil {
+			return // mux closed
+		}
+		go s.handleStream(ctx, stream, dest)
+	}
+}
+
+// handleStream dials the real destination and copies data bidirectionally.
+func (s *ghostServer) handleStream(ctx context.Context, stream mux.Stream, dest mux.Destination) {
+	defer stream.Close()
+
+	addr := net.JoinHostPort(dest.Addr, strconv.Itoa(int(dest.Port)))
+	target, err := net.DialTimeout("tcp", addr, 10*time.Second)
+	if err != nil {
+		slog.Warn("ghost: dial destination", "addr", addr, "err", err)
+		return
+	}
+	defer target.Close()
+
+	// Bidirectional copy.
+	done := make(chan struct{})
+	go func() {
+		io.Copy(target, stream) // client → destination
+		if tc, ok := target.(*net.TCPConn); ok {
+			tc.CloseWrite()
+		}
+		close(done)
+	}()
+
+	io.Copy(stream, target) // destination → client
+	<-done
 }
 
 // handleFallback splices the connection to the fallback backend.
@@ -349,10 +421,13 @@ func (s *ghostServer) handleFallback(ctx context.Context, conn *peekConn, fallba
 	}
 }
 
-// ghostSession is a minimal Session stub for Stage 2.2.
+// ghostSession represents an authenticated client session backed by a ServerMux.
 type ghostSession struct {
 	id         string
 	remoteAddr net.Addr
+	serverMux  mux.ServerMux
+	upW        *io.PipeWriter
+	downW      *io.PipeWriter
 	done       chan struct{}
 	closeOnce  sync.Once
 }
@@ -364,10 +439,10 @@ func (gs *ghostSession) Close() error {
 	return nil
 }
 func (gs *ghostSession) Receive(ctx context.Context) ([]byte, error) {
-	return nil, fmt.Errorf("ghostSession.Receive: %w", ErrNotImplemented)
+	return nil, fmt.Errorf("ghostSession.Receive: use mux.Accept() instead: %w", ErrNotImplemented)
 }
 func (gs *ghostSession) Send(ctx context.Context, payload []byte) error {
-	return fmt.Errorf("ghostSession.Send: %w", ErrNotImplemented)
+	return fmt.Errorf("ghostSession.Send: use mux streams instead: %w", ErrNotImplemented)
 }
 
 // generateSessionID returns a random 32-character hex string.

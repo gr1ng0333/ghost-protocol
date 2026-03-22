@@ -213,10 +213,8 @@ func TestAuth_EndToEnd_Success(t *testing.T) {
 	defer cleanup()
 
 	payload := []byte("auth-e2e-test-payload-12345")
-	got := authTestPost(t, h2cc, token, "/api/v1/sync", payload)
-	if got != string(payload) {
-		t.Errorf("echo response = %q, want %q", got, payload)
-	}
+	_ = authTestPost(t, h2cc, token, "/api/v1/sync", payload)
+	// POST no longer echoes — it pipes data to the mux. 200 status is validated by authTestPost.
 }
 
 // TestAuth_EndToEnd_WrongKey verifies that a client with the wrong key
@@ -313,12 +311,10 @@ func TestAuth_EndToEnd_TokenValidation(t *testing.T) {
 		"request-delta-0123456789",
 		"request-epsilon",
 	}
-	for i, p := range payloads {
-		got := authTestPost(t, h2cc, token, "/api/v1/sync", []byte(p))
-		if got != p {
-			t.Errorf("echo[%d] = %q, want %q", i, got, p)
-		}
+	for _, p := range payloads {
+		_ = authTestPost(t, h2cc, token, "/api/v1/sync", []byte(p))
 	}
+	// POST no longer echoes — assert only that all 5 requests got 200 (authTestPost fatals on non-200).
 }
 
 // TestAuth_EndToEnd_MultipleClients verifies that a server configured with
@@ -360,10 +356,8 @@ func TestAuth_EndToEnd_MultipleClients(t *testing.T) {
 		h2cc, token, cleanup := authTestConn(t, ctx, srvAddr, ca)
 
 		payload := []byte("multi-client-" + string(rune('A'+i)))
-		got := authTestPost(t, h2cc, token, "/api/v1/sync", payload)
-		if got != string(payload) {
-			t.Errorf("client %d: echo = %q, want %q", i, got, payload)
-		}
+		_ = authTestPost(t, h2cc, token, "/api/v1/sync", payload)
+		// POST no longer echoes — assert only 200 status (authTestPost fatals on non-200).
 
 		cleanup()
 		cancel()
@@ -456,7 +450,18 @@ func TestAuth_EndToEnd_ChannelBinding(t *testing.T) {
 
 		// Serve HTTP/2 briefly so the client can make a request.
 		h2srv := &http2.Server{}
-		handler := newGhostHandler(sa, sharedSecret, b)
+		upR, upW := io.Pipe()
+		downR, downW := io.Pipe()
+		defer upR.Close()
+		defer downW.Close()
+		// Drain upstream so POST doesn't block.
+		go io.Copy(io.Discard, upR)
+		// Feed downstream so GET returns data then closes.
+		go func() {
+			downW.Write([]byte("channel-binding-ok"))
+			downW.Close()
+		}()
+		handler := newGhostHandler(sa, sharedSecret, b, upW, downR, "/api/v1/sync", "/api/v1/poll")
 		h2srv.ServeConn(tlsConn, &http2.ServeConnOpts{Handler: handler})
 	}()
 
@@ -498,10 +503,6 @@ func TestAuth_EndToEnd_ChannelBinding(t *testing.T) {
 
 	if resp.StatusCode != 200 {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
-	}
-	got, _ := io.ReadAll(resp.Body)
-	if string(got) != postBody {
-		t.Errorf("echo = %q, want %q", got, postBody)
 	}
 
 	// Close client to let server goroutine exit.

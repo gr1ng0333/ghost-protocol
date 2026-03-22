@@ -570,6 +570,23 @@ func TestServer_AuthenticatedHTTP2Handler(t *testing.T) {
 	defer clientRaw.Close()
 	defer serverRaw.Close()
 
+	// Create pipes for mux ↔ handler communication.
+	upR, upW := io.Pipe()
+	downR, downW := io.Pipe()
+	defer upR.Close()
+	defer upW.Close()
+	defer downR.Close()
+	defer downW.Close()
+
+	// Drain upstream pipe so POST handler doesn't block.
+	go io.Copy(io.Discard, upR)
+
+	// Feed downstream pipe data then close so GET handler can complete.
+	go func() {
+		downW.Write([]byte("mux-ok"))
+		downW.Close()
+	}()
+
 	// Server side: TLS + HTTP/2.
 	serverTLSCfg := &tls.Config{
 		Certificates: []tls.Certificate{cert},
@@ -592,7 +609,7 @@ func TestServer_AuthenticatedHTTP2Handler(t *testing.T) {
 		}
 
 		h2srv := &http2.Server{}
-		handler := newGhostHandler(sa, sharedSecret, binding)
+		handler := newGhostHandler(sa, sharedSecret, binding, upW, downR, "/api/upload", "/api/download")
 		h2srv.ServeConn(tlsConn, &http2.ServeConnOpts{Handler: handler})
 	}()
 
@@ -624,7 +641,7 @@ func TestServer_AuthenticatedHTTP2Handler(t *testing.T) {
 		t.Fatalf("NewClientConn: %v", err)
 	}
 
-	// Test POST echo.
+	// Test POST — body goes to upstream pipe, response is 200 OK.
 	postBody := "hello-ghost-h2"
 	postReq, _ := http.NewRequest(http.MethodPost, "https://localhost/api/v1/sync", bytes.NewReader([]byte(postBody)))
 	postReq.Header.Set("X-Session-Token", token)
@@ -637,12 +654,8 @@ func TestServer_AuthenticatedHTTP2Handler(t *testing.T) {
 	if postResp.StatusCode != 200 {
 		t.Errorf("POST status = %d, want 200", postResp.StatusCode)
 	}
-	respBody, _ := io.ReadAll(postResp.Body)
-	if string(respBody) != postBody {
-		t.Errorf("POST response = %q, want %q", respBody, postBody)
-	}
 
-	// Test GET.
+	// Test GET — streams downstream data from pipe.
 	getReq, _ := http.NewRequest(http.MethodGet, "https://localhost/api/v1/events/test", nil)
 	getReq.Header.Set("X-Session-Token", token)
 	getResp, err := h2cc.RoundTrip(getReq)
@@ -655,8 +668,8 @@ func TestServer_AuthenticatedHTTP2Handler(t *testing.T) {
 		t.Errorf("GET status = %d, want 200", getResp.StatusCode)
 	}
 	getBody, _ := io.ReadAll(getResp.Body)
-	if string(getBody) != "ghost-ok\n" {
-		t.Errorf("GET response = %q, want %q", getBody, "ghost-ok\n")
+	if string(getBody) != "mux-ok" {
+		t.Errorf("GET response = %q, want %q", getBody, "mux-ok")
 	}
 
 	// Test 403 without token.
