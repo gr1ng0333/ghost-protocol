@@ -1,0 +1,21 @@
+listen: ":443"
+domain: "example.com"
+auth:
+  server_public_key: "0000000000000000000000000000000000000000000000000000000000000000"
+  server_private_key: "0000000000000000000000000000000000000000000000000000000000000000"
+backend:
+  allowed_ports: [80, 443]
+shaping:
+  default_mode: "balanced"
+  profile_dir: "profiles/"
+  auto_mode: true
+fallback:
+  addr: "127.0.0.1:8080"
+  web_root: "/var/www/html"
+  use_caddy: true
+sessions:
+  max_sessions: 10
+  idle_timeout_sec: 300
+log:
+  level: "info"
+  file: "stdout"

@@ -1,0 +1,16 @@
+server:
+  addr: "203.0.113.42:443"
+  sni: "example.com"
+auth:
+  server_public_key: "0000000000000000000000000000000000000000000000000000000000000000"
+proxy:
+  mode: "socks5"
+  socks5: "127.0.0.1:1080"
+  dns: "1.1.1.1:53"
+shaping:
+  default_mode: "balanced"
+  profile_dir: "profiles/"
+  auto_mode: true
+log:
+  level: "info"
+  file: "stdout"
