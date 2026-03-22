@@ -2,13 +2,14 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 
+	"ghost/internal/auth"
 	"ghost/internal/config"
 	"ghost/internal/transport"
 )
@@ -39,11 +40,15 @@ func main() {
 	}
 	slog.Info("generated self-signed certificate", "domain", domain)
 
-	// Derive shared secret from server private key, or use a default.
-	secret := deriveSecret(cfg.Auth.ServerPrivateKey)
+	// Build ServerAuth from config keys.
+	sa, err := buildServerAuth(cfg.Auth)
+	if err != nil {
+		slog.Error("failed to build server auth", "err", err)
+		os.Exit(1)
+	}
 
 	// Create server.
-	srv := transport.NewServer(&cfg, tlsCert, secret)
+	srv := transport.NewServer(&cfg, tlsCert, sa)
 
 	// Graceful shutdown on SIGINT/SIGTERM.
 	ctx, cancel := context.WithCancel(context.Background())
@@ -72,18 +77,35 @@ func main() {
 	}
 }
 
-// deriveSecret produces a shared secret from the server private key hex string.
-// If the key is empty, returns a deterministic default for development.
-func deriveSecret(privateKeyHex string) []byte {
-	if privateKeyHex == "" || privateKeyHex == "0000000000000000000000000000000000000000000000000000000000000000" {
-		h := sha256.Sum256([]byte("ghost-dev-secret"))
-		return h[:]
+// buildServerAuth creates a ServerAuth from the config's key material.
+// If the private key or client key is empty, generates dev keys for development.
+func buildServerAuth(ac config.AuthConfig) (auth.ServerAuth, error) {
+	var serverPriv [32]byte
+	if ac.ServerPrivateKey == "" || ac.ServerPrivateKey == "0000000000000000000000000000000000000000000000000000000000000000" {
+		kp, err := auth.GenKeyPair()
+		if err != nil {
+			return nil, err
+		}
+		serverPriv = kp.Private
+		slog.Warn("using generated dev server key (not for production)")
+	} else {
+		raw, err := hex.DecodeString(ac.ServerPrivateKey)
+		if err != nil || len(raw) != 32 {
+			return nil, fmt.Errorf("invalid server_private_key hex")
+		}
+		copy(serverPriv[:], raw)
 	}
-	raw, err := hex.DecodeString(privateKeyHex)
-	if err != nil {
-		h := sha256.Sum256([]byte(privateKeyHex))
-		return h[:]
+
+	var clientPubs [][32]byte
+	if ac.ClientPublicKey != "" {
+		raw, err := hex.DecodeString(ac.ClientPublicKey)
+		if err != nil || len(raw) != 32 {
+			return nil, fmt.Errorf("invalid client_public_key hex")
+		}
+		var pub [32]byte
+		copy(pub[:], raw)
+		clientPubs = append(clientPubs, pub)
 	}
-	h := sha256.Sum256(raw)
-	return h[:]
+
+	return auth.NewServerAuth(serverPriv, clientPubs)
 }

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"ghost/internal/auth"
 )
 
 func skipIfNoNetwork(t *testing.T) {
@@ -17,7 +19,12 @@ func skipIfNoNetwork(t *testing.T) {
 }
 
 func testDialer() Dialer {
-	return NewDialer(DefaultChromeH2Config())
+	// Generate throwaway key pair for external server tests.
+	// Auth won't be verified by external servers, but Dialer requires it.
+	clientKP, _ := auth.GenKeyPair()
+	serverKP, _ := auth.GenKeyPair()
+	ca, _ := auth.NewClientAuth(clientKP.Private, serverKP.Public)
+	return NewDialer(DefaultChromeH2Config(), ca)
 }
 
 func testDial(t *testing.T, addr, sni string) Conn {

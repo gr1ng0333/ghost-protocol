@@ -1,8 +1,7 @@
 package transport
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
+	"ghost/internal/auth"
 )
 
 // routeMode indicates the routing decision for a connection.
@@ -16,34 +15,25 @@ const (
 // connRouter decides how to handle incoming connections based on
 // ClientHello authentication.
 type connRouter struct {
-	secret []byte // Shared secret for HMAC verification
+	serverAuth auth.ServerAuth
 }
 
-// newConnRouter creates a router with the given shared secret.
-func newConnRouter(secret []byte) *connRouter {
-	return &connRouter{secret: secret}
+// newConnRouter creates a router with the given ServerAuth.
+func newConnRouter(sa auth.ServerAuth) *connRouter {
+	return &connRouter{serverAuth: sa}
 }
 
-// route inspects the parsed ClientHello and returns the routing decision.
-// Authentication check: compute HMAC-SHA256(secret, random)[:32] and compare
-// to the presented sessionID. If they match → routeGhost. Otherwise → routeFallback.
-func (r *connRouter) route(chi *clientHelloInfo) routeMode {
-	if chi == nil {
-		return routeFallback
+// route inspects the parsed ClientHello and returns the routing decision
+// along with the shared secret for authenticated clients.
+// It always checks all client keys to avoid timing side-channels.
+func (r *connRouter) route(chi *clientHelloInfo) (routeMode, [32]byte) {
+	var zero [32]byte
+	if chi == nil || r.serverAuth == nil {
+		return routeFallback, zero
 	}
-	if checkSessionID(chi.Random, chi.SessionID, r.secret) {
-		return routeGhost
+	secret, ok := r.serverAuth.VerifySessionID(chi.Random, chi.SessionID)
+	if ok {
+		return routeGhost, secret
 	}
-	return routeFallback
-}
-
-// checkSessionID verifies that sessionID matches HMAC-SHA256(secret, random)[:32].
-func checkSessionID(random, sessionID, secret []byte) bool {
-	if len(random) < 32 || len(sessionID) < 32 {
-		return false
-	}
-	mac := hmac.New(sha256.New, secret)
-	mac.Write(random)
-	expected := mac.Sum(nil)[:32]
-	return hmac.Equal(sessionID[:32], expected)
+	return routeFallback, zero
 }

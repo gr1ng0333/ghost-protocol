@@ -3,9 +3,7 @@ package transport
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/tls"
 	"encoding/binary"
 	"fmt"
@@ -16,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"ghost/internal/auth"
 	"ghost/internal/config"
 
 	"golang.org/x/net/http2"
@@ -166,7 +165,7 @@ func startMockFallbackTLS(t *testing.T, cert tls.Certificate) (addr string, gotR
 	return addr, gotRequest
 }
 
-func newTestServer(t *testing.T, secret []byte, fallbackAddr string) (*ghostServer, context.CancelFunc) {
+func newTestServer(t *testing.T, sa auth.ServerAuth, fallbackAddr string) (*ghostServer, context.CancelFunc) {
 	t.Helper()
 	cert, err := GenerateSelfSignedCert("localhost")
 	if err != nil {
@@ -176,7 +175,7 @@ func newTestServer(t *testing.T, secret []byte, fallbackAddr string) (*ghostServ
 		Domain:   "localhost",
 		Fallback: config.FallbackConfig{Addr: fallbackAddr},
 	}
-	srv := NewServer(cfg, cert, secret).(*ghostServer)
+	srv := NewServer(cfg, cert, sa).(*ghostServer)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
@@ -224,7 +223,9 @@ func TestBuildTestClientHello_Parseable(t *testing.T) {
 }
 
 func TestServer_AuthenticatedRouting(t *testing.T) {
-	secret := []byte("integration-test-secret-value!!!")
+	serverKP, _ := auth.GenKeyPair()
+	clientKP, _ := auth.GenKeyPair()
+	sa, _ := auth.NewServerAuth(serverKP.Private, [][32]byte{clientKP.Public})
 
 	// Start a mock fallback that records incoming connections.
 	fallbackCert, err := GenerateSelfSignedCert("fallback.local")
@@ -234,7 +235,7 @@ func TestServer_AuthenticatedRouting(t *testing.T) {
 	fallbackAddr, fallbackGot := startMockFallback(t, fallbackCert)
 
 	// Start Ghost server.
-	srv, _ := newTestServer(t, secret, fallbackAddr)
+	srv, _ := newTestServer(t, sa, fallbackAddr)
 	srvAddr := srv.Addr().String()
 
 	// Connect with crafted ClientHello containing correct SessionID.
@@ -246,9 +247,8 @@ func TestServer_AuthenticatedRouting(t *testing.T) {
 
 	random := make([]byte, 32)
 	rand.Read(random)
-	mac := hmac.New(sha256.New, secret)
-	mac.Write(random)
-	sessionID := mac.Sum(nil)[:32]
+	sharedSecret, _ := auth.SharedSecret(clientKP.Private, serverKP.Public)
+	sessionID := auth.ComputeSessionID(sharedSecret, random)
 
 	hello := buildTestClientHello(random, sessionID)
 	if _, err := conn.Write(hello); err != nil {
@@ -279,7 +279,9 @@ func TestServer_AuthenticatedRouting(t *testing.T) {
 }
 
 func TestServer_UnauthenticatedFallback(t *testing.T) {
-	secret := []byte("integration-test-secret-value!!!")
+	serverKP, _ := auth.GenKeyPair()
+	clientKP, _ := auth.GenKeyPair()
+	sa, _ := auth.NewServerAuth(serverKP.Private, [][32]byte{clientKP.Public})
 
 	// Start a mock fallback that does a TLS handshake and serves HTTP.
 	fallbackCert, err := GenerateSelfSignedCert("fallback.local")
@@ -289,7 +291,7 @@ func TestServer_UnauthenticatedFallback(t *testing.T) {
 	fallbackAddr, fallbackGotReq := startMockFallbackTLS(t, fallbackCert)
 
 	// Start Ghost server.
-	srv, _ := newTestServer(t, secret, fallbackAddr)
+	srv, _ := newTestServer(t, sa, fallbackAddr)
 	srvAddr := srv.Addr().String()
 
 	// Standard TLS client — its random SessionID won't match the HMAC.
@@ -329,7 +331,9 @@ func TestServer_UnauthenticatedFallback(t *testing.T) {
 }
 
 func TestServer_Fallback_SeesValidTLS(t *testing.T) {
-	secret := []byte("integration-test-secret-value!!!")
+	serverKP, _ := auth.GenKeyPair()
+	clientKP, _ := auth.GenKeyPair()
+	sa, _ := auth.NewServerAuth(serverKP.Private, [][32]byte{clientKP.Public})
 
 	// Start a raw TCP mock fallback that records the first bytes.
 	fallbackCert, err := GenerateSelfSignedCert("fallback.local")
@@ -339,7 +343,7 @@ func TestServer_Fallback_SeesValidTLS(t *testing.T) {
 	fallbackAddr, fallbackGot := startMockFallback(t, fallbackCert)
 
 	// Start Ghost server.
-	srv, _ := newTestServer(t, secret, fallbackAddr)
+	srv, _ := newTestServer(t, sa, fallbackAddr)
 	srvAddr := srv.Addr().String()
 
 	// Connect as an unauthenticated client — just send a standard TLS ClientHello.
@@ -380,7 +384,10 @@ func TestServer_Fallback_SeesValidTLS(t *testing.T) {
 }
 
 func TestServer_ConcurrentConnections(t *testing.T) {
-	secret := []byte("integration-test-secret-value!!!")
+	serverKP, _ := auth.GenKeyPair()
+	clientKP, _ := auth.GenKeyPair()
+	sa, _ := auth.NewServerAuth(serverKP.Private, [][32]byte{clientKP.Public})
+	sharedSecret, _ := auth.SharedSecret(clientKP.Private, serverKP.Public)
 
 	fallbackCert, err := GenerateSelfSignedCert("fallback.local")
 	if err != nil {
@@ -388,7 +395,7 @@ func TestServer_ConcurrentConnections(t *testing.T) {
 	}
 	fallbackAddr, fallbackGot := startMockFallback(t, fallbackCert)
 
-	srv, _ := newTestServer(t, secret, fallbackAddr)
+	srv, _ := newTestServer(t, sa, fallbackAddr)
 	srvAddr := srv.Addr().String()
 
 	const total = 10
@@ -409,7 +416,7 @@ func TestServer_ConcurrentConnections(t *testing.T) {
 			unauthCount++
 		}
 
-		go func(idx int, auth bool) {
+		go func(idx int, authenticated bool) {
 			defer wg.Done()
 
 			conn, err := net.DialTimeout("tcp", srvAddr, 3*time.Second)
@@ -425,10 +432,8 @@ func TestServer_ConcurrentConnections(t *testing.T) {
 			rand.Read(random)
 
 			var sessionID []byte
-			if auth {
-				mac := hmac.New(sha256.New, secret)
-				mac.Write(random)
-				sessionID = mac.Sum(nil)[:32]
+			if authenticated {
+				sessionID = auth.ComputeSessionID(sharedSecret, random)
 			} else {
 				sessionID = make([]byte, 32)
 				rand.Read(sessionID)
@@ -444,7 +449,7 @@ func TestServer_ConcurrentConnections(t *testing.T) {
 				// Connection might be closed by server or timeout — that's OK for this test.
 				return
 			}
-			if n > 0 && auth && buf[0] != 0x16 {
+			if n > 0 && authenticated && buf[0] != 0x16 {
 				mu.Lock()
 				errors = append(errors, fmt.Sprintf("auth conn %d: expected 0x16, got 0x%02x", idx, buf[0]))
 				mu.Unlock()
@@ -481,7 +486,9 @@ done:
 }
 
 func TestSplice_BidirectionalCopy_E2E(t *testing.T) {
-	secret := []byte("integration-test-secret-value!!!")
+	serverKP, _ := auth.GenKeyPair()
+	clientKP, _ := auth.GenKeyPair()
+	sa, _ := auth.NewServerAuth(serverKP.Private, [][32]byte{clientKP.Public})
 
 	// Start a full TLS mock fallback that serves HTTP.
 	fallbackCert, err := GenerateSelfSignedCert("fallback.local")
@@ -510,7 +517,7 @@ func TestSplice_BidirectionalCopy_E2E(t *testing.T) {
 	t.Cleanup(func() { fallbackSrv.Close() })
 
 	// Start Ghost server pointing at the fallback.
-	srv, _ := newTestServer(t, secret, fallbackAddr)
+	srv, _ := newTestServer(t, sa, fallbackAddr)
 	srvAddr := srv.Addr().String()
 
 	// Use a standard TLS client (unauthenticated) — should be spliced to fallback.
@@ -548,7 +555,11 @@ func TestSplice_BidirectionalCopy_E2E(t *testing.T) {
 func TestServer_AuthenticatedHTTP2Handler(t *testing.T) {
 	// Test the full Ghost HTTP/2 handler via a direct TLS connection to the server.
 	// We use net.Pipe + tls to bypass the SessionID check and directly drive handleGhost.
-	secret := []byte("handler-e2e-test-secret-value!!!")
+	serverKP, _ := auth.GenKeyPair()
+	clientKP, _ := auth.GenKeyPair()
+	sa, _ := auth.NewServerAuth(serverKP.Private, [][32]byte{clientKP.Public})
+	sharedSecret, _ := auth.SharedSecret(clientKP.Private, serverKP.Public)
+
 	cert, err := GenerateSelfSignedCert("localhost")
 	if err != nil {
 		t.Fatalf("GenerateSelfSignedCert: %v", err)
@@ -573,8 +584,15 @@ func TestServer_AuthenticatedHTTP2Handler(t *testing.T) {
 		}
 		defer tlsConn.Close()
 
+		// Derive channel binding for token verification.
+		serverCS := tlsConn.ConnectionState()
+		binding, err := serverCS.ExportKeyingMaterial(exporterLabel, nil, 32)
+		if err != nil {
+			return
+		}
+
 		h2srv := &http2.Server{}
-		handler := newGhostHandler(secret)
+		handler := newGhostHandler(sa, sharedSecret, binding)
 		h2srv.ServeConn(tlsConn, &http2.ServeConnOpts{Handler: handler})
 	}()
 
@@ -589,6 +607,14 @@ func TestServer_AuthenticatedHTTP2Handler(t *testing.T) {
 	}
 	defer tlsClient.Close()
 
+	// Derive client-side channel binding and session token.
+	clientCS := tlsClient.ConnectionState()
+	clientBinding, err := clientCS.ExportKeyingMaterial(exporterLabel, nil, 32)
+	if err != nil {
+		t.Fatalf("client ExportKeyingMaterial: %v", err)
+	}
+	token := auth.DeriveSessionToken(sharedSecret, clientBinding)
+
 	// Create an HTTP/2 client transport over the TLS connection.
 	h2t := &http2.Transport{
 		TLSClientConfig: clientTLSCfg,
@@ -597,8 +623,6 @@ func TestServer_AuthenticatedHTTP2Handler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClientConn: %v", err)
 	}
-
-	token := computeSessionToken(secret)
 
 	// Test POST echo.
 	postBody := "hello-ghost-h2"

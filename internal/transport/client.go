@@ -9,10 +9,15 @@ import (
 	"net"
 	"time"
 
+	"ghost/internal/auth"
+
 	http "github.com/bogdanfinn/fhttp"
 	"github.com/bogdanfinn/fhttp/http2"
 	utls "github.com/refraction-networking/utls"
 )
+
+// exporterLabel is the TLS Exported Keying Material label used for channel binding.
+const exporterLabel = "EXPORTER-ghost-session"
 
 // Conn represents an HTTP/2 connection to the Ghost server.
 type Conn interface {
@@ -46,6 +51,7 @@ type h2Conn struct {
 	rawConn net.Conn
 	baseURL string   // "https://{sni}"
 	pho     []string // pseudo-header order
+	token   string   // session token for X-Session-Token header
 }
 
 func (c *h2Conn) Send(ctx context.Context, path string, payload []byte) (io.ReadCloser, error) {
@@ -55,6 +61,7 @@ func (c *h2Conn) Send(ctx context.Context, path string, payload []byte) (io.Read
 		return nil, fmt.Errorf("transport.Send: build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set("X-Session-Token", c.token)
 	req.Header[http.PHeaderOrderKey] = c.pho
 
 	resp, err := c.cc.RoundTrip(req)
@@ -70,6 +77,7 @@ func (c *h2Conn) Recv(ctx context.Context, path string) (io.ReadCloser, error) {
 	if err != nil {
 		return nil, fmt.Errorf("transport.Recv: build request: %w", err)
 	}
+	req.Header.Set("X-Session-Token", c.token)
 	req.Header[http.PHeaderOrderKey] = c.pho
 
 	resp, err := c.cc.RoundTrip(req)
@@ -116,13 +124,15 @@ func (c *h2Conn) Alive() bool {
 type h2Dialer struct {
 	cfg     H2Config
 	helloID utls.ClientHelloID
+	auth    auth.ClientAuth
 }
 
-// NewDialer returns a Dialer configured with the given H2Config.
-func NewDialer(cfg H2Config) Dialer {
+// NewDialer returns a Dialer configured with the given H2Config and ClientAuth.
+func NewDialer(cfg H2Config, a auth.ClientAuth) Dialer {
 	return &h2Dialer{
 		cfg:     cfg,
 		helloID: utls.HelloChrome_Auto,
+		auth:    a,
 	}
 }
 
@@ -134,12 +144,57 @@ func (d *h2Dialer) Dial(ctx context.Context, addr, sni string) (Conn, error) {
 		return nil, fmt.Errorf("transport.Dial: TCP %s: %w", addr, err)
 	}
 
-	// 2. Perform uTLS handshake.
+	// 2. Create uTLS client and build handshake state for SessionID injection.
 	uconn := utls.UClient(rawConn, &utls.Config{ServerName: sni}, d.helloID)
-	if err := uconn.HandshakeContext(ctx); err != nil {
+	if err := uconn.BuildHandshakeState(); err != nil {
+		rawConn.Close()
+		return nil, fmt.Errorf("transport.Dial: build handshake: %w", err)
+	}
+
+	// 3. Inject authentication SessionID into the ClientHello.
+	random := uconn.HandshakeState.Hello.Random
+	sid, err := d.auth.InjectSessionID(random)
+	if err != nil {
+		rawConn.Close()
+		return nil, fmt.Errorf("transport.Dial: inject session ID: %w", err)
+	}
+	uconn.HandshakeState.Hello.SessionId = sid
+	// Patch raw ClientHello: offset 39 = type(1) + length(3) + version(2) + random(32) + sid_len(1)
+	if len(uconn.HandshakeState.Hello.Raw) < 39+len(sid) {
+		rawConn.Close()
+		return nil, fmt.Errorf("transport.Dial: ClientHello Raw too short for SessionID patch")
+	}
+	copy(uconn.HandshakeState.Hello.Raw[39:39+len(sid)], sid)
+
+	// 3b. Disable renegotiation in the uTLS config so ExportKeyingMaterial works.
+	// uTLS Chrome presets include RenegotiationInfoExtension with
+	// Renegotiation: RenegotiateOnceAsClient (matching real Chrome behavior).
+	// Go's crypto/tls blocks ExportKeyingMaterial when renegotiation is enabled,
+	// returning "ExportKeyingMaterial is unavailable when renegotiation is enabled".
+	// Resetting the extension's Renegotiation field to RenegotiateNever and calling
+	// ApplyConfig() updates the internal config without modifying Hello.Raw, so the
+	// renegotiation_info extension bytes remain in the serialized ClientHello and
+	// the TLS fingerprint is preserved.
+	for _, ext := range uconn.Extensions {
+		if ri, ok := ext.(*utls.RenegotiationInfoExtension); ok {
+			ri.Renegotiation = utls.RenegotiateNever
+			break
+		}
+	}
+	if err := uconn.ApplyConfig(); err != nil {
+		rawConn.Close()
+		return nil, fmt.Errorf("transport.Dial: apply config: %w", err)
+	}
+
+	// 4. Perform TLS handshake with injected SessionID.
+	if deadline, ok := ctx.Deadline(); ok {
+		rawConn.SetDeadline(deadline)
+	}
+	if err := uconn.Handshake(); err != nil {
 		rawConn.Close()
 		return nil, fmt.Errorf("transport.Dial: TLS handshake: %w", err)
 	}
+	rawConn.SetDeadline(time.Time{})
 
 	state := uconn.ConnectionState()
 	if state.NegotiatedProtocol != "h2" {
@@ -150,7 +205,20 @@ func (d *h2Dialer) Dial(ctx context.Context, addr, sni string) (Conn, error) {
 		"addr", addr, "sni", sni, "alpn", state.NegotiatedProtocol,
 		"tls_version", fmt.Sprintf("0x%04x", state.Version))
 
-	// 3. Create http2.Transport with Chrome SETTINGS from H2Config.
+	// 5. Derive session token from TLS channel binding.
+	cs := uconn.ConnectionState()
+	binding, err := cs.ExportKeyingMaterial(exporterLabel, nil, 32)
+	if err != nil {
+		uconn.Close()
+		return nil, fmt.Errorf("transport.Dial: export keying material: %w", err)
+	}
+	token, err := d.auth.DeriveSessionToken(binding)
+	if err != nil {
+		uconn.Close()
+		return nil, fmt.Errorf("transport.Dial: derive session token: %w", err)
+	}
+
+	// 6. Create http2.Transport with Chrome SETTINGS from H2Config.
 	h2t := &http2.Transport{
 		Settings: map[http2.SettingID]uint32{
 			http2.SettingHeaderTableSize:   d.cfg.HeaderTableSize,
@@ -168,7 +236,7 @@ func (d *h2Dialer) Dial(ctx context.Context, addr, sni string) (Conn, error) {
 		PseudoHeaderOrder: d.cfg.PseudoHeaderOrder,
 	}
 
-	// 4. Create HTTP/2 ClientConn on top of the uTLS connection.
+	// 7. Create HTTP/2 ClientConn on top of the uTLS connection.
 	cc, err := h2t.NewClientConn(uconn)
 	if err != nil {
 		uconn.Close()
@@ -181,5 +249,6 @@ func (d *h2Dialer) Dial(ctx context.Context, addr, sni string) (Conn, error) {
 		rawConn: uconn,
 		baseURL: "https://" + sni,
 		pho:     d.cfg.PseudoHeaderOrder,
+		token:   token,
 	}, nil
 }

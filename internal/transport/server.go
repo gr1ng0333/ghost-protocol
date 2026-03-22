@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"ghost/internal/auth"
 	"ghost/internal/config"
 
 	"golang.org/x/net/http2"
@@ -150,26 +151,26 @@ func parseClientHello(raw []byte) (*clientHelloInfo, error) {
 
 // ghostServer implements the Server interface.
 type ghostServer struct {
-	cfg      *config.ServerConfig
-	tlsCert  tls.Certificate
-	secret   []byte
-	listener net.Listener
-	sessions chan Session
-	mu       sync.Mutex
-	closed   bool
-	wg       sync.WaitGroup
+	cfg        *config.ServerConfig
+	tlsCert    tls.Certificate
+	serverAuth auth.ServerAuth
+	listener   net.Listener
+	sessions   chan Session
+	mu         sync.Mutex
+	closed     bool
+	wg         sync.WaitGroup
 }
 
 // NewServer creates a new Ghost server.
 // cfg is the server configuration.
 // tlsCert is the TLS certificate for authenticated Ghost connections.
-// secret is the shared secret for SessionID verification (temporary, Stage 2.3b replaces).
-func NewServer(cfg *config.ServerConfig, tlsCert tls.Certificate, secret []byte) Server {
+// sa is the ServerAuth for SessionID verification and token validation.
+func NewServer(cfg *config.ServerConfig, tlsCert tls.Certificate, sa auth.ServerAuth) Server {
 	return &ghostServer{
-		cfg:      cfg,
-		tlsCert:  tlsCert,
-		secret:   secret,
-		sessions: make(chan Session, 64),
+		cfg:        cfg,
+		tlsCert:    tlsCert,
+		serverAuth: sa,
+		sessions:   make(chan Session, 64),
 	}
 }
 
@@ -272,19 +273,19 @@ func (s *ghostServer) handleIncoming(ctx context.Context, conn net.Conn, fallbac
 
 // handleConn routes the connection based on ClientHello authentication.
 func (s *ghostServer) handleConn(ctx context.Context, conn *peekConn, chi *clientHelloInfo, fallback string) {
-	router := newConnRouter(s.secret)
-	mode := router.route(chi)
+	router := newConnRouter(s.serverAuth)
+	mode, sharedSecret := router.route(chi)
 
 	switch mode {
 	case routeGhost:
-		s.handleGhost(ctx, conn, chi)
+		s.handleGhost(ctx, conn, chi, sharedSecret)
 	case routeFallback:
 		s.handleFallback(ctx, conn, fallback)
 	}
 }
 
 // handleGhost performs the TLS handshake and serves HTTP/2 for authenticated Ghost clients.
-func (s *ghostServer) handleGhost(ctx context.Context, conn *peekConn, chi *clientHelloInfo) {
+func (s *ghostServer) handleGhost(ctx context.Context, conn *peekConn, chi *clientHelloInfo, sharedSecret [32]byte) {
 	tlsCfg := &tls.Config{
 		Certificates: []tls.Certificate{s.tlsCert},
 		NextProtos:   []string{"h2", "http/1.1"},
@@ -318,8 +319,16 @@ func (s *ghostServer) handleGhost(ctx context.Context, conn *peekConn, chi *clie
 
 	slog.Info("ghost: serving HTTP/2", "remote", conn.RemoteAddr(), "session", sess.id)
 
+	// Derive channel binding for token verification.
+	cs := tlsConn.ConnectionState()
+	binding, err := cs.ExportKeyingMaterial(exporterLabel, nil, 32)
+	if err != nil {
+		slog.Warn("ghost: export keying material failed", "err", err, "remote", conn.RemoteAddr())
+		return
+	}
+
 	h2srv := &http2.Server{}
-	handler := newGhostHandler(s.secret)
+	handler := newGhostHandler(s.serverAuth, sharedSecret, binding)
 	h2srv.ServeConn(tlsConn, &http2.ServeConnOpts{
 		Handler: handler,
 	})

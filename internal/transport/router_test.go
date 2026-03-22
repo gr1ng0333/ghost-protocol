@@ -1,110 +1,135 @@
 package transport
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
 	"testing"
+
+	"ghost/internal/auth"
 )
 
-// computeValidSessionID produces a valid HMAC-SHA256(secret, random)[:32] for testing.
-func computeValidSessionID(secret, random []byte) []byte {
-	mac := hmac.New(sha256.New, secret)
-	mac.Write(random)
-	return mac.Sum(nil)[:32]
-}
-
 func TestConnRouter_AuthenticatedClient(t *testing.T) {
-	secret := []byte("ghost-shared-secret")
+	serverKP, _ := auth.GenKeyPair()
+	clientKP, _ := auth.GenKeyPair()
+	sa, _ := auth.NewServerAuth(serverKP.Private, [][32]byte{clientKP.Public})
+
+	sharedSecret, _ := auth.SharedSecret(clientKP.Private, serverKP.Public)
 	random := make([]byte, 32)
 	for i := range random {
 		random[i] = byte(i + 1)
 	}
-	sessionID := computeValidSessionID(secret, random)
+	sessionID := auth.ComputeSessionID(sharedSecret, random)
 
-	r := newConnRouter(secret)
+	r := newConnRouter(sa)
 	chi := &clientHelloInfo{
 		Random:    random,
 		SessionID: sessionID,
 	}
 
-	if got := r.route(chi); got != routeGhost {
-		t.Errorf("route() = %d, want routeGhost (%d)", got, routeGhost)
+	mode, secret := r.route(chi)
+	if mode != routeGhost {
+		t.Errorf("route() = %d, want routeGhost (%d)", mode, routeGhost)
+	}
+	if secret != sharedSecret {
+		t.Error("route() returned wrong shared secret")
 	}
 }
 
 func TestConnRouter_WrongSessionID(t *testing.T) {
-	secret := []byte("ghost-shared-secret")
+	serverKP, _ := auth.GenKeyPair()
+	clientKP, _ := auth.GenKeyPair()
+	sa, _ := auth.NewServerAuth(serverKP.Private, [][32]byte{clientKP.Public})
+
 	random := make([]byte, 32)
 	for i := range random {
 		random[i] = byte(i + 1)
 	}
-	// Wrong session ID — just random bytes.
 	badSessionID := make([]byte, 32)
 	for i := range badSessionID {
 		badSessionID[i] = 0xFF
 	}
 
-	r := newConnRouter(secret)
+	r := newConnRouter(sa)
 	chi := &clientHelloInfo{
 		Random:    random,
 		SessionID: badSessionID,
 	}
 
-	if got := r.route(chi); got != routeFallback {
-		t.Errorf("route() = %d, want routeFallback (%d)", got, routeFallback)
+	mode, _ := r.route(chi)
+	if mode != routeFallback {
+		t.Errorf("route() = %d, want routeFallback (%d)", mode, routeFallback)
 	}
 }
 
 func TestConnRouter_EmptySessionID(t *testing.T) {
-	secret := []byte("ghost-shared-secret")
+	serverKP, _ := auth.GenKeyPair()
+	clientKP, _ := auth.GenKeyPair()
+	sa, _ := auth.NewServerAuth(serverKP.Private, [][32]byte{clientKP.Public})
+
 	random := make([]byte, 32)
 
-	r := newConnRouter(secret)
+	r := newConnRouter(sa)
 	chi := &clientHelloInfo{
 		Random:    random,
 		SessionID: nil,
 	}
 
-	if got := r.route(chi); got != routeFallback {
-		t.Errorf("route() = %d, want routeFallback (%d)", got, routeFallback)
+	mode, _ := r.route(chi)
+	if mode != routeFallback {
+		t.Errorf("route() = %d, want routeFallback (%d)", mode, routeFallback)
 	}
 }
 
 func TestConnRouter_ShortRandom(t *testing.T) {
-	secret := []byte("ghost-shared-secret")
+	serverKP, _ := auth.GenKeyPair()
+	clientKP, _ := auth.GenKeyPair()
+	sa, _ := auth.NewServerAuth(serverKP.Private, [][32]byte{clientKP.Public})
 
-	r := newConnRouter(secret)
+	r := newConnRouter(sa)
 	chi := &clientHelloInfo{
-		Random:    []byte{0x01, 0x02, 0x03}, // Only 3 bytes
+		Random:    []byte{0x01, 0x02, 0x03},
 		SessionID: make([]byte, 32),
 	}
 
-	if got := r.route(chi); got != routeFallback {
-		t.Errorf("route() = %d, want routeFallback (%d)", got, routeFallback)
+	mode, _ := r.route(chi)
+	if mode != routeFallback {
+		t.Errorf("route() = %d, want routeFallback (%d)", mode, routeFallback)
 	}
 }
 
 func TestConnRouter_NilClientHelloInfo(t *testing.T) {
-	secret := []byte("ghost-shared-secret")
-	r := newConnRouter(secret)
+	serverKP, _ := auth.GenKeyPair()
+	clientKP, _ := auth.GenKeyPair()
+	sa, _ := auth.NewServerAuth(serverKP.Private, [][32]byte{clientKP.Public})
 
-	if got := r.route(nil); got != routeFallback {
-		t.Errorf("route(nil) = %d, want routeFallback (%d)", got, routeFallback)
+	r := newConnRouter(sa)
+
+	mode, _ := r.route(nil)
+	if mode != routeFallback {
+		t.Errorf("route(nil) = %d, want routeFallback (%d)", mode, routeFallback)
 	}
 }
 
-func TestCheckSessionID_Deterministic(t *testing.T) {
-	secret := []byte("determinism-test-secret")
+func TestConnRouter_Deterministic(t *testing.T) {
+	serverKP, _ := auth.GenKeyPair()
+	clientKP, _ := auth.GenKeyPair()
+	sa, _ := auth.NewServerAuth(serverKP.Private, [][32]byte{clientKP.Public})
+
+	sharedSecret, _ := auth.SharedSecret(clientKP.Private, serverKP.Public)
 	random := make([]byte, 32)
 	for i := range random {
 		random[i] = byte(i * 7)
 	}
-	sessionID := computeValidSessionID(secret, random)
+	sessionID := auth.ComputeSessionID(sharedSecret, random)
 
-	// Call multiple times — must always return true.
+	r := newConnRouter(sa)
+	chi := &clientHelloInfo{
+		Random:    random,
+		SessionID: sessionID,
+	}
+
 	for i := 0; i < 100; i++ {
-		if !checkSessionID(random, sessionID, secret) {
-			t.Fatalf("checkSessionID returned false on iteration %d", i)
+		mode, _ := r.route(chi)
+		if mode != routeGhost {
+			t.Fatalf("route() returned routeFallback on iteration %d", i)
 		}
 	}
 }

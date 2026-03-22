@@ -6,12 +6,25 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"ghost/internal/auth"
 )
 
+// testHandlerSetup creates a ghostHandler and valid token for unit tests.
+func testHandlerSetup(t *testing.T) (*ghostHandler, string) {
+	t.Helper()
+	serverKP, _ := auth.GenKeyPair()
+	clientKP, _ := auth.GenKeyPair()
+	sa, _ := auth.NewServerAuth(serverKP.Private, [][32]byte{clientKP.Public})
+	sharedSecret, _ := auth.SharedSecret(clientKP.Private, serverKP.Public)
+	binding := []byte("test-binding-value")
+	handler := newGhostHandler(sa, sharedSecret, binding)
+	token := auth.DeriveSessionToken(sharedSecret, binding)
+	return handler, token
+}
+
 func TestGhostHandler_EchoPost(t *testing.T) {
-	secret := []byte("test-secret")
-	handler := newGhostHandler(secret)
-	token := computeSessionToken(secret)
+	handler, token := testHandlerSetup(t)
 
 	body := "hello"
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sync", strings.NewReader(body))
@@ -32,8 +45,7 @@ func TestGhostHandler_EchoPost(t *testing.T) {
 }
 
 func TestGhostHandler_MissingToken(t *testing.T) {
-	secret := []byte("test-secret")
-	handler := newGhostHandler(secret)
+	handler, _ := testHandlerSetup(t)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sync", strings.NewReader("hello"))
 	rr := httptest.NewRecorder()
@@ -45,8 +57,7 @@ func TestGhostHandler_MissingToken(t *testing.T) {
 }
 
 func TestGhostHandler_InvalidToken(t *testing.T) {
-	secret := []byte("test-secret")
-	handler := newGhostHandler(secret)
+	handler, _ := testHandlerSetup(t)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sync", strings.NewReader("hello"))
 	req.Header.Set("X-Session-Token", "wrong-token-value")
@@ -59,9 +70,7 @@ func TestGhostHandler_InvalidToken(t *testing.T) {
 }
 
 func TestGhostHandler_GetEndpoint(t *testing.T) {
-	secret := []byte("test-secret")
-	handler := newGhostHandler(secret)
-	token := computeSessionToken(secret)
+	handler, token := testHandlerSetup(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/events/test", nil)
 	req.Header.Set("X-Session-Token", token)
@@ -82,9 +91,7 @@ func TestGhostHandler_GetEndpoint(t *testing.T) {
 }
 
 func TestGhostHandler_UnknownPath(t *testing.T) {
-	secret := []byte("test-secret")
-	handler := newGhostHandler(secret)
-	token := computeSessionToken(secret)
+	handler, token := testHandlerSetup(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/unknown", nil)
 	req.Header.Set("X-Session-Token", token)
@@ -94,25 +101,5 @@ func TestGhostHandler_UnknownPath(t *testing.T) {
 
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", rr.Code, http.StatusNotFound)
-	}
-}
-
-func TestComputeSessionToken_Deterministic(t *testing.T) {
-	secret1 := []byte("secret-one")
-	secret2 := []byte("secret-two")
-
-	t1a := computeSessionToken(secret1)
-	t1b := computeSessionToken(secret1)
-	t2 := computeSessionToken(secret2)
-
-	if t1a != t1b {
-		t.Errorf("same secret produced different tokens: %q vs %q", t1a, t1b)
-	}
-	if t1a == t2 {
-		t.Errorf("different secrets produced same token: %q", t1a)
-	}
-	// Token should be hex-encoded 16 bytes = 32 hex chars.
-	if len(t1a) != 32 {
-		t.Errorf("token length = %d, want 32", len(t1a))
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"ghost/internal/auth"
 	"ghost/internal/config"
 )
 
@@ -163,7 +164,11 @@ func TestNewServer_ListenAndClose(t *testing.T) {
 		t.Fatalf("GenerateSelfSignedCert: %v", err)
 	}
 
-	srv := NewServer(cfg, cert, []byte("test-secret"))
+	serverKP, _ := auth.GenKeyPair()
+	clientKP, _ := auth.GenKeyPair()
+	sa, _ := auth.NewServerAuth(serverKP.Private, [][32]byte{clientKP.Public})
+
+	srv := NewServer(cfg, cert, sa)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

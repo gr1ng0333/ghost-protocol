@@ -1,9 +1,7 @@
 package transport
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
+	"ghost/internal/auth"
 	"io"
 	"log/slog"
 	"net/http"
@@ -13,21 +11,26 @@ import (
 // ghostHandler handles HTTP/2 requests from authenticated Ghost clients.
 // For Stage 2.2, this is an echo handler — real frame processing comes in Stage 2.3c.
 type ghostHandler struct {
-	secret []byte
+	serverAuth   auth.ServerAuth
+	sharedSecret [32]byte
+	binding      []byte // TLS channel binding for token verification
 }
 
-// newGhostHandler creates an HTTP/2 handler with the given shared secret
-// for X-Session-Token validation.
-func newGhostHandler(secret []byte) *ghostHandler {
-	return &ghostHandler{secret: secret}
+// newGhostHandler creates an HTTP/2 handler with the ServerAuth,
+// per-client shared secret, and TLS channel binding for X-Session-Token validation.
+func newGhostHandler(sa auth.ServerAuth, secret [32]byte, binding []byte) *ghostHandler {
+	return &ghostHandler{
+		serverAuth:   sa,
+		sharedSecret: secret,
+		binding:      binding,
+	}
 }
 
 // ServeHTTP implements http.Handler.
 func (h *ghostHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Validate X-Session-Token on every request.
 	token := r.Header.Get("X-Session-Token")
-	expected := computeSessionToken(h.secret)
-	if token == "" || !hmac.Equal([]byte(token), []byte(expected)) {
+	if token == "" || !h.serverAuth.VerifyToken(h.sharedSecret, h.binding, token) {
 		slog.Warn("ghost: invalid session token", "remote", r.RemoteAddr, "path", r.URL.Path)
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
@@ -67,12 +70,4 @@ func (h *ghostHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("ghost-ok\n"))
-}
-
-// computeSessionToken computes the simplified session token for Stage 2.2.
-// token = hex(HMAC-SHA256(secret, "ghost-session")[:16])
-func computeSessionToken(secret []byte) string {
-	mac := hmac.New(sha256.New, secret)
-	mac.Write([]byte("ghost-session"))
-	return hex.EncodeToString(mac.Sum(nil)[:16])
 }
