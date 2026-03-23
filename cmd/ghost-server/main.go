@@ -8,9 +8,13 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"ghost/internal/auth"
 	"ghost/internal/config"
+	"ghost/internal/framing"
+	"ghost/internal/mux"
+	"ghost/internal/shaping"
 	"ghost/internal/transport"
 )
 
@@ -47,8 +51,32 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Load traffic profile for shaping (optional).
+	var wrap *mux.PipelineWrap
+	if profile, err := shaping.LoadProfile("profiles/chrome_browsing.json"); err == nil {
+		seed := time.Now().UnixNano()
+		padder := shaping.NewProfilePadder(profile, seed)
+		timer := shaping.NewProfileTimer(profile, seed+1)
+		selector := shaping.NewAdaptiveSelector(shaping.ModePerformance, false)
+
+		wrap = &mux.PipelineWrap{
+			WrapWriter: func(w framing.FrameWriter) framing.FrameWriter {
+				padded := &shaping.PadderFrameWriter{Padder: padder, Next: w}
+				return &shaping.TimerFrameWriter{
+					Timer: timer, Selector: selector, Next: padded,
+				}
+			},
+			WrapReader: func(r framing.FrameReader) framing.FrameReader {
+				return &shaping.UnpadderFrameReader{Padder: padder, Src: r}
+			},
+		}
+		slog.Info("traffic shaping enabled", "profile", profile.Name)
+	} else {
+		slog.Info("traffic shaping disabled (no profile found)", "err", err)
+	}
+
 	// Create server.
-	srv := transport.NewServer(&cfg, tlsCert, sa, nil)
+	srv := transport.NewServer(&cfg, tlsCert, sa, wrap)
 
 	// Graceful shutdown on SIGINT/SIGTERM.
 	ctx, cancel := context.WithCancel(context.Background())
