@@ -8,9 +8,10 @@ auth:
   client_private_key: "0000000000000000000000000000000000000000000000000000000000000000"
 
 proxy:
-  mode: "socks5"
+  mode: "socks5"              # "socks5" or "tun" (tun requires root on Linux)
   socks5: "127.0.0.1:1080"
-  dns: "1.1.1.1:53"
+  tun_name: "ghost0"          # TUN device name (used in tun mode)
+  dns: "1.1.1.1:53"           # DNS server (used through tunnel)
 
 shaping:
   default_mode: "performance"

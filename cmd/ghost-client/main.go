@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"flag"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
@@ -104,34 +105,79 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Create SOCKS5 server and stream opener.
-	socks5 := proxy.NewSOCKS5Server()
+	// Create stream opener for proxy modes.
 	opener := func(ctx context.Context, addr string, port uint16) (proxy.Stream, error) {
 		return pipeline.Mux.Open(ctx, addr, port)
 	}
 
-	// Start SOCKS5 server.
-	socks5Addr := cfg.Proxy.Socks5
-	if socks5Addr == "" {
-		socks5Addr = "127.0.0.1:1080"
-	}
-	go func() {
-		if err := socks5.ListenAndServe(ctx, socks5Addr, opener); err != nil {
-			slog.Error("socks5 server failed", "err", err)
-		}
-	}()
-
-	slog.Info("ghost client started", "server", cfg.Server.Addr, "socks5", socks5Addr)
-
-	// Wait for shutdown signal.
+	// Signal handling.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	sig := <-sigCh
-	slog.Info("received signal, shutting down", "signal", sig)
 
-	cancel()
-	socks5.Close()
-	pipeline.Close()
+	mode := cfg.Proxy.Mode
+	if mode == "" {
+		mode = "socks5"
+	}
+
+	switch mode {
+	case "socks5":
+		socks5 := proxy.NewSOCKS5Server()
+		socks5Addr := cfg.Proxy.Socks5
+		if socks5Addr == "" {
+			socks5Addr = "127.0.0.1:1080"
+		}
+		go func() {
+			if err := socks5.ListenAndServe(ctx, socks5Addr, opener); err != nil {
+				slog.Error("socks5 server failed", "err", err)
+			}
+		}()
+
+		slog.Info("ghost client started (socks5 mode)",
+			"server", cfg.Server.Addr, "proxy", socks5Addr)
+
+		sig := <-sigCh
+		slog.Info("received signal, shutting down", "signal", sig)
+
+		cancel()
+		socks5.Close()
+		pipeline.Close()
+
+	case "tun":
+		serverHost, _, err := net.SplitHostPort(cfg.Server.Addr)
+		if err != nil {
+			slog.Error("invalid server address", "addr", cfg.Server.Addr, "error", err)
+			os.Exit(1)
+		}
+
+		tunName := cfg.Proxy.TunName
+		if tunName == "" {
+			tunName = "ghost0"
+		}
+
+		tunDev := newTunDevice(tunName, "10.0.85.1", serverHost)
+		if tunDev == nil {
+			slog.Error("tun mode not supported on this platform")
+			os.Exit(1)
+		}
+		if err := tunDev.Start(ctx, opener); err != nil {
+			slog.Error("tun device failed to start", "error", err)
+			os.Exit(1)
+		}
+
+		slog.Info("ghost client started (tun mode)",
+			"server", cfg.Server.Addr, "tun", tunName)
+
+		sig := <-sigCh
+		slog.Info("received signal, shutting down", "signal", sig)
+
+		cancel()
+		tunDev.Stop()
+		pipeline.Close()
+
+	default:
+		slog.Error("unknown proxy mode", "mode", mode)
+		os.Exit(1)
+	}
 
 	slog.Info("ghost client stopped")
 }
