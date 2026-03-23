@@ -45,6 +45,7 @@ type AuthConfig struct {
 	ServerPublicKey  string `yaml:"server_public_key"`
 	ServerPrivateKey string `yaml:"server_private_key"`
 	ClientPublicKey  string `yaml:"client_public_key"`
+	ClientPrivateKey string `yaml:"client_private_key"`
 }
 
 // ProxyConfig configures client-side traffic capture.

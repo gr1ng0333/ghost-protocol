@@ -1,205 +1,195 @@
 package main
 
 import (
-	"encoding/json"
-	"fmt"
-	"io"
-	"log"
-	"net"
+	"context"
+	"encoding/hex"
+	"flag"
+	"log/slog"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
-	http "github.com/bogdanfinn/fhttp"
-	"github.com/bogdanfinn/fhttp/http2"
-	btls "github.com/bogdanfinn/utls"
-	utls "github.com/refraction-networking/utls"
+	"ghost/internal/auth"
+	"ghost/internal/config"
+	"ghost/internal/framing"
+	"ghost/internal/mux"
+	"ghost/internal/proxy"
+	"ghost/internal/shaping"
+	"ghost/internal/transport"
 )
 
 func main() {
-	log.SetFlags(0)
+	cfgPath := flag.String("config", "configs/client.yaml", "path to client config file")
+	flag.Parse()
 
-	const (
-		targetHost = "tls.peet.ws"
-		targetAddr = "tls.peet.ws:443"
-		targetURL  = "https://tls.peet.ws/api/all"
-	)
-
-	// Configure HTTP/2 transport with Chrome SETTINGS
-	h2Transport := &http2.Transport{
-		DialTLS: func(network, addr string, _ *btls.Config) (net.Conn, error) {
-			return dialUTLS(network, addr)
-		},
-		Settings: map[http2.SettingID]uint32{
-			http2.SettingHeaderTableSize:   65536,
-			http2.SettingEnablePush:        0,
-			http2.SettingInitialWindowSize: 6291456,
-			http2.SettingMaxHeaderListSize: 262144,
-		},
-		SettingsOrder: []http2.SettingID{
-			http2.SettingHeaderTableSize,
-			http2.SettingEnablePush,
-			http2.SettingInitialWindowSize,
-			http2.SettingMaxHeaderListSize,
-		},
-		ConnectionFlow:    15663105,
-		PseudoHeaderOrder: []string{":method", ":authority", ":scheme", ":path"},
+	// Load configuration.
+	var cfg config.ClientConfig
+	if err := config.Load(*cfgPath, &cfg); err != nil {
+		slog.Error("failed to load config", "path", *cfgPath, "err", err)
+		os.Exit(1)
 	}
 
-	client := &http.Client{Transport: h2Transport}
+	// Setup logging.
+	setupLog(cfg.Log)
 
-	req, err := http.NewRequest("GET", targetURL, nil)
+	// Parse auth keys from hex.
+	serverPub, err := decodeKey(cfg.Auth.ServerPublicKey, "server_public_key")
 	if err != nil {
-		log.Fatalf("create request: %v", err)
+		slog.Error("invalid auth key", "err", err)
+		os.Exit(1)
 	}
-
-	// Set Chrome-like headers
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
-	req.Header.Set("Accept-Encoding", "gzip, deflate, br")
-	req.Header.Set("Sec-Ch-Ua", `"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"`)
-	req.Header.Set("Sec-Ch-Ua-Mobile", "?0")
-	req.Header.Set("Sec-Ch-Ua-Platform", `"Windows"`)
-	req.Header.Set("Sec-Fetch-Dest", "document")
-	req.Header.Set("Sec-Fetch-Mode", "navigate")
-	req.Header.Set("Sec-Fetch-Site", "none")
-	req.Header.Set("Sec-Fetch-User", "?1")
-	req.Header.Set("Upgrade-Insecure-Requests", "1")
-	req.Header[http.PHeaderOrderKey] = []string{":method", ":authority", ":scheme", ":path"}
-	req.Header[http.HeaderOrderKey] = []string{
-		"sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform",
-		"upgrade-insecure-requests", "user-agent", "accept",
-		"sec-fetch-site", "sec-fetch-mode", "sec-fetch-user", "sec-fetch-dest",
-		"accept-encoding", "accept-language",
-	}
-
-	fmt.Println("=== Ghost Fingerprint Test ===")
-	fmt.Printf("[*] Target: %s\n", targetURL)
-
-	resp, err := client.Do(req)
+	clientPriv, err := decodeKey(cfg.Auth.ClientPrivateKey, "client_private_key")
 	if err != nil {
-		log.Fatalf("[!] Request failed: %v", err)
+		slog.Error("invalid auth key", "err", err)
+		os.Exit(1)
 	}
-	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	// Create client auth.
+	clientAuth, err := auth.NewClientAuth(clientPriv, serverPub)
 	if err != nil {
-		log.Fatalf("[!] Read body: %v", err)
+		slog.Error("failed to create client auth", "err", err)
+		os.Exit(1)
 	}
 
-	fmt.Printf("[+] HTTP status: %s\n", resp.Status)
-	fmt.Printf("[+] Protocol: %s\n\n", resp.Proto)
-
-	// Parse and display fingerprint data
-	var result map[string]interface{}
-	if err := json.Unmarshal(body, &result); err != nil {
-		fmt.Printf("Raw response:\n%s\n", body)
-		os.Exit(0)
+	// Compute shared secret for path derivation.
+	sharedSecret, err := auth.SharedSecret(clientPriv, serverPub)
+	if err != nil {
+		slog.Error("failed to compute shared secret", "err", err)
+		os.Exit(1)
 	}
 
-	pretty, _ := json.MarshalIndent(result, "", "  ")
-	fmt.Printf("=== Full Response ===\n%s\n\n", pretty)
+	// Create transport dialer and connect.
+	dialer := transport.NewDialer(transport.DefaultChromeH2Config(), clientAuth)
 
-	// Highlight key fingerprint values from nested structure
-	fmt.Println("=== Key Fingerprint Values ===")
-	if tlsInfo := getMap(result, "tls"); tlsInfo != nil {
-		printField(tlsInfo, "ja4", "JA4 Hash")
-		printField(tlsInfo, "ja4_r", "JA4_r")
-		printField(tlsInfo, "ja3", "JA3 String")
-		printField(tlsInfo, "ja3_hash", "JA3 MD5")
-		printField(tlsInfo, "peetprint_hash", "Peetprint Hash")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	conn, err := dialer.Dial(ctx, cfg.Server.Addr, cfg.Server.SNI)
+	if err != nil {
+		slog.Error("failed to dial server", "addr", cfg.Server.Addr, "err", err)
+		os.Exit(1)
 	}
 
-	// Print HTTP/2 details
-	if h2 := getMap(result, "http2"); h2 != nil {
-		fmt.Println("\n=== HTTP/2 Details ===")
-		printField(h2, "akamai_fingerprint", "Akamai H2 Fingerprint")
-		printField(h2, "akamai_fingerprint_hash", "Akamai H2 FP Hash")
-		if frames := getSlice(h2, "sent_frames"); frames != nil {
-			for _, f := range frames {
-				fm, ok := f.(map[string]interface{})
-				if !ok {
-					continue
+	// Load traffic profile for shaping (optional).
+	var wrap *mux.PipelineWrap
+	if profile, err := shaping.LoadProfile("profiles/chrome_browsing.json"); err == nil {
+		seed := time.Now().UnixNano()
+		padder := shaping.NewProfilePadder(profile, seed)
+		timer := shaping.NewProfileTimer(profile, seed+1)
+		selector := shaping.NewAdaptiveSelector(shaping.ModePerformance, false)
+
+		wrap = &mux.PipelineWrap{
+			WrapWriter: func(w framing.FrameWriter) framing.FrameWriter {
+				padded := &shaping.PadderFrameWriter{Padder: padder, Next: w}
+				return &shaping.TimerFrameWriter{
+					Timer: timer, Selector: selector, Next: padded,
 				}
-				switch fm["frame_type"] {
-				case "SETTINGS":
-					if settings := getSlice(fm, "settings"); settings != nil {
-						fmt.Println("SETTINGS:")
-						for _, s := range settings {
-							fmt.Printf("  %v\n", s)
-						}
-					}
-				case "WINDOW_UPDATE":
-					if inc, ok := fm["increment"].(float64); ok {
-						fmt.Printf("WINDOW_UPDATE: %d\n", int64(inc))
-					} else {
-						fmt.Printf("WINDOW_UPDATE: %v\n", fm["increment"])
-					}
-				case "HEADERS":
-					if headers := getSlice(fm, "headers"); headers != nil {
-						fmt.Println("Pseudo-header order (from HEADERS frame):")
-						for _, h := range headers {
-							s, _ := h.(string)
-							if len(s) > 0 && s[0] == ':' {
-								fmt.Printf("  %s\n", s)
-							}
-						}
-					}
-				}
-			}
+			},
+			WrapReader: func(r framing.FrameReader) framing.FrameReader {
+				return &shaping.UnpadderFrameReader{Padder: padder, Src: r}
+			},
 		}
+		slog.Info("traffic shaping enabled", "profile", profile.Name)
+	} else {
+		slog.Info("traffic shaping disabled (no profile found)", "err", err)
 	}
-}
 
-func dialUTLS(network, addr string) (net.Conn, error) {
-	rawConn, err := net.DialTimeout(network, addr, 10*time.Second)
+	// Create mux pipeline.
+	uploadPath, downloadPath := mux.DerivePaths(sharedSecret)
+	pipeline, err := mux.NewClientPipeline(ctx, conn, uploadPath, downloadPath, wrap)
 	if err != nil {
-		return nil, fmt.Errorf("TCP dial %s: %w", addr, err)
+		slog.Error("failed to create pipeline", "err", err)
+		conn.Close()
+		os.Exit(1)
 	}
 
-	host, _, err := net.SplitHostPort(addr)
+	// Create SOCKS5 server and stream opener.
+	socks5 := proxy.NewSOCKS5Server()
+	opener := func(ctx context.Context, addr string, port uint16) (proxy.Stream, error) {
+		return pipeline.Mux.Open(ctx, addr, port)
+	}
+
+	// Start SOCKS5 server.
+	socks5Addr := cfg.Proxy.Socks5
+	if socks5Addr == "" {
+		socks5Addr = "127.0.0.1:1080"
+	}
+	go func() {
+		if err := socks5.ListenAndServe(ctx, socks5Addr, opener); err != nil {
+			slog.Error("socks5 server failed", "err", err)
+		}
+	}()
+
+	slog.Info("ghost client started", "server", cfg.Server.Addr, "socks5", socks5Addr)
+
+	// Wait for shutdown signal.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	sig := <-sigCh
+	slog.Info("received signal, shutting down", "signal", sig)
+
+	cancel()
+	socks5.Close()
+	pipeline.Close()
+
+	slog.Info("ghost client stopped")
+}
+
+// decodeKey decodes a 32-byte hex-encoded key.
+func decodeKey(s, name string) ([32]byte, error) {
+	var key [32]byte
+	raw, err := hex.DecodeString(s)
 	if err != nil {
-		rawConn.Close()
-		return nil, fmt.Errorf("split host/port %s: %w", addr, err)
+		return key, &keyError{name: name, err: err}
 	}
-
-	uconn := utls.UClient(rawConn, &utls.Config{ServerName: host}, utls.HelloChrome_Auto)
-	if err := uconn.Handshake(); err != nil {
-		rawConn.Close()
-		return nil, fmt.Errorf("uTLS handshake: %w", err)
+	if len(raw) != 32 {
+		return key, &keyError{name: name, err: errKeyLen}
 	}
-
-	state := uconn.ConnectionState()
-	fmt.Printf("[+] TLS handshake OK (version: 0x%04x, ALPN: %s)\n", state.Version, state.NegotiatedProtocol)
-
-	if state.NegotiatedProtocol != "h2" {
-		uconn.Close()
-		return nil, fmt.Errorf("expected ALPN h2, got %q", state.NegotiatedProtocol)
-	}
-
-	return uconn, nil
+	copy(key[:], raw)
+	return key, nil
 }
 
-func printField(m map[string]interface{}, key, label string) {
-	if v, ok := m[key]; ok {
-		fmt.Printf("%-25s %v\n", label+":", v)
-	}
+type keyError struct {
+	name string
+	err  error
 }
 
-func getMap(m map[string]interface{}, key string) map[string]interface{} {
-	if v, ok := m[key]; ok {
-		if mm, ok := v.(map[string]interface{}); ok {
-			return mm
+func (e *keyError) Error() string { return e.name + ": " + e.err.Error() }
+func (e *keyError) Unwrap() error { return e.err }
+
+var errKeyLen = &strError{"expected 32 bytes"}
+
+type strError struct{ s string }
+
+func (e *strError) Error() string { return e.s }
+
+// setupLog configures slog based on LogConfig.
+func setupLog(lc config.LogConfig) {
+	var level slog.Level
+	switch lc.Level {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	default:
+		level = slog.LevelInfo
+	}
+	opts := &slog.HandlerOptions{Level: level}
+
+	var handler slog.Handler
+	if lc.File != "" && lc.File != "stdout" {
+		f, err := os.OpenFile(lc.File, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+		if err != nil {
+			slog.Error("failed to open log file, using stdout", "file", lc.File, "err", err)
+			handler = slog.NewTextHandler(os.Stdout, opts)
+		} else {
+			handler = slog.NewTextHandler(f, opts)
 		}
+	} else {
+		handler = slog.NewTextHandler(os.Stdout, opts)
 	}
-	return nil
-}
-
-func getSlice(m map[string]interface{}, key string) []interface{} {
-	if v, ok := m[key]; ok {
-		if s, ok := v.([]interface{}); ok {
-			return s
-		}
-	}
-	return nil
+	slog.SetDefault(slog.New(handler))
 }
