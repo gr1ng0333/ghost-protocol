@@ -52,6 +52,7 @@ func main() {
 	}
 
 	// Load traffic profile for shaping (optional).
+	// TODO(stage-5): Wire CoverGenerator + StatsUpdater per-session when session lifecycle management exists.
 	var wrap *mux.PipelineWrap
 	if profile, err := shaping.LoadProfile("profiles/chrome_browsing.json"); err == nil {
 		seed := time.Now().UnixNano()

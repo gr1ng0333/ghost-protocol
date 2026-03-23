@@ -73,19 +73,29 @@ func main() {
 	}
 
 	// Load traffic profile for shaping (optional).
-	var wrap *mux.PipelineWrap
-	if profile, err := shaping.LoadProfile("profiles/chrome_browsing.json"); err == nil {
-		seed := time.Now().UnixNano()
-		padder := shaping.NewProfilePadder(profile, seed)
-		timer := shaping.NewProfileTimer(profile, seed+1)
-		selector := shaping.NewAdaptiveSelector(shaping.ModePerformance, false)
+	var (
+		wrap          *mux.PipelineWrap
+		profile       *shaping.Profile
+		selector      *shaping.AdaptiveSelector
+		timerWriter   *shaping.TimerFrameWriter
+		wrappedWriter framing.FrameWriter
+		shapingSeed   int64
+	)
+	if p, err := shaping.LoadProfile("profiles/chrome_browsing.json"); err == nil {
+		profile = p
+		shapingSeed = time.Now().UnixNano()
+		padder := shaping.NewProfilePadder(profile, shapingSeed)
+		timer := shaping.NewProfileTimer(profile, shapingSeed+1)
+		selector = shaping.NewAdaptiveSelector(shaping.ModePerformance, false)
 
 		wrap = &mux.PipelineWrap{
 			WrapWriter: func(w framing.FrameWriter) framing.FrameWriter {
 				padded := &shaping.PadderFrameWriter{Padder: padder, Next: w}
-				return &shaping.TimerFrameWriter{
+				timerWriter = &shaping.TimerFrameWriter{
 					Timer: timer, Selector: selector, Next: padded,
 				}
+				wrappedWriter = timerWriter
+				return timerWriter
 			},
 			WrapReader: func(r framing.FrameReader) framing.FrameReader {
 				return &shaping.UnpadderFrameReader{Padder: padder, Src: r}
@@ -103,6 +113,19 @@ func main() {
 		slog.Error("failed to create pipeline", "err", err)
 		conn.Close()
 		os.Exit(1)
+	}
+
+	// Start cover traffic generator and stats feedback loop.
+	var cover *shaping.CoverGenerator
+	if wrappedWriter != nil && profile != nil {
+		cover = shaping.NewCoverGenerator(wrappedWriter, selector, profile, shapingSeed+2)
+		cover.Start(ctx)
+
+		statsAdapter := &muxStatsAdapter{getMuxStats: pipeline.Mux.Stats}
+		updater := shaping.NewStatsUpdater(statsAdapter, timerWriter, cover, 1*time.Second)
+		go updater.Run(ctx)
+
+		slog.Info("cover traffic generator started")
 	}
 
 	// Create stream opener for proxy modes.
@@ -139,6 +162,9 @@ func main() {
 		slog.Info("received signal, shutting down", "signal", sig)
 
 		cancel()
+		if cover != nil {
+			cover.Stop()
+		}
 		socks5.Close()
 		pipeline.Close()
 
@@ -171,6 +197,9 @@ func main() {
 		slog.Info("received signal, shutting down", "signal", sig)
 
 		cancel()
+		if cover != nil {
+			cover.Stop()
+		}
 		tunDev.Stop()
 		pipeline.Close()
 
@@ -207,6 +236,15 @@ func (e *keyError) Unwrap() error { return e.err }
 var errKeyLen = &strError{"expected 32 bytes"}
 
 type strError struct{ s string }
+
+// muxStatsAdapter wraps a ClientMux to satisfy shaping.MuxStatsProvider.
+type muxStatsAdapter struct {
+	getMuxStats func() mux.MuxStats
+}
+
+func (a *muxStatsAdapter) ActiveStreamCount() int { return a.getMuxStats().ActiveStreams }
+func (a *muxStatsAdapter) TotalBytesSent() uint64 { return a.getMuxStats().BytesSent }
+func (a *muxStatsAdapter) TotalBytesRecv() uint64 { return a.getMuxStats().BytesRecv }
 
 func (e *strError) Error() string { return e.s }
 
