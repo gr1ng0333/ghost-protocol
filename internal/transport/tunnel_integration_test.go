@@ -235,7 +235,7 @@ func TestTunnel_EndToEnd(t *testing.T) {
 	defer conn.Close()
 
 	up, down := mux.DerivePaths(secret)
-	pipe, err := mux.NewClientPipeline(ctx, conn, up, down)
+	pipe, err := mux.NewClientPipeline(ctx, conn, up, down, nil)
 	if err != nil {
 		t.Fatalf("NewClientPipeline: %v", err)
 	}
@@ -288,7 +288,7 @@ func TestTunnel_MultipleStreams(t *testing.T) {
 	defer conn.Close()
 
 	up, down := mux.DerivePaths(secret)
-	pipe, err := mux.NewClientPipeline(ctx, conn, up, down)
+	pipe, err := mux.NewClientPipeline(ctx, conn, up, down, nil)
 	if err != nil {
 		t.Fatalf("NewClientPipeline: %v", err)
 	}
@@ -352,7 +352,7 @@ func TestTunnel_StreamClose(t *testing.T) {
 	defer conn.Close()
 
 	up, down := mux.DerivePaths(secret)
-	pipe, err := mux.NewClientPipeline(ctx, conn, up, down)
+	pipe, err := mux.NewClientPipeline(ctx, conn, up, down, nil)
 	if err != nil {
 		t.Fatalf("NewClientPipeline: %v", err)
 	}
@@ -425,7 +425,7 @@ func TestTunnel_LargePayload(t *testing.T) {
 	defer conn.Close()
 
 	up, down := mux.DerivePaths(secret)
-	pipe, err := mux.NewClientPipeline(ctx, conn, up, down)
+	pipe, err := mux.NewClientPipeline(ctx, conn, up, down, nil)
 	if err != nil {
 		t.Fatalf("NewClientPipeline: %v", err)
 	}

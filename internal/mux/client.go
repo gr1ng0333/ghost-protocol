@@ -21,8 +21,8 @@ type writeReq struct {
 
 // clientMux implements ClientMux.
 type clientMux struct {
-	encoder framing.Encoder
-	decoder framing.Decoder
+	writer framing.FrameWriter
+	reader framing.FrameReader
 
 	mu      sync.Mutex
 	streams map[uint32]*stream
@@ -36,12 +36,12 @@ type clientMux struct {
 }
 
 // NewClientMux creates a client-side multiplexer.
-// encoder writes Ghost frames to the outbound connection (upstream).
-// decoder reads Ghost frames from the inbound connection (downstream).
-func NewClientMux(encoder framing.Encoder, decoder framing.Decoder) ClientMux {
+// writer sends Ghost frames to the outbound connection (upstream).
+// reader reads Ghost frames from the inbound connection (downstream).
+func NewClientMux(writer framing.FrameWriter, reader framing.FrameReader) ClientMux {
 	m := &clientMux{
-		encoder: encoder,
-		decoder: decoder,
+		writer:  writer,
+		reader:  reader,
 		streams: make(map[uint32]*stream),
 		nextID:  1,
 		writeCh: make(chan writeReq, 256),
@@ -150,7 +150,7 @@ func (m *clientMux) writeLoop() {
 	for {
 		select {
 		case req := <-m.writeCh:
-			req.errCh <- m.encoder.Encode(req.frame)
+			req.errCh <- m.writer.WriteFrame(req.frame)
 		case <-m.done:
 			return
 		}
@@ -162,7 +162,7 @@ func (m *clientMux) writeLoop() {
 func (m *clientMux) readLoop() {
 	defer m.Close()
 	for {
-		frame, err := m.decoder.Decode()
+		frame, err := m.reader.ReadFrame()
 		if err != nil {
 			return
 		}

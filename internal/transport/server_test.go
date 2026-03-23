@@ -168,7 +168,7 @@ func TestNewServer_ListenAndClose(t *testing.T) {
 	clientKP, _ := auth.GenKeyPair()
 	sa, _ := auth.NewServerAuth(serverKP.Private, [][32]byte{clientKP.Public})
 
-	srv := NewServer(cfg, cert, sa)
+	srv := NewServer(cfg, cert, sa, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

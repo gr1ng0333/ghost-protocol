@@ -157,6 +157,7 @@ type ghostServer struct {
 	cfg        *config.ServerConfig
 	tlsCert    tls.Certificate
 	serverAuth auth.ServerAuth
+	wrap       *mux.PipelineWrap
 	listener   net.Listener
 	sessions   chan Session
 	mu         sync.Mutex
@@ -168,11 +169,13 @@ type ghostServer struct {
 // cfg is the server configuration.
 // tlsCert is the TLS certificate for authenticated Ghost connections.
 // sa is the ServerAuth for SessionID verification and token validation.
-func NewServer(cfg *config.ServerConfig, tlsCert tls.Certificate, sa auth.ServerAuth) Server {
+// wrap provides optional frame middleware (padding/shaping). Pass nil for no wrapping.
+func NewServer(cfg *config.ServerConfig, tlsCert tls.Certificate, sa auth.ServerAuth, wrap *mux.PipelineWrap) Server {
 	return &ghostServer{
 		cfg:        cfg,
 		tlsCert:    tlsCert,
 		serverAuth: sa,
+		wrap:       wrap,
 		sessions:   make(chan Session, 64),
 	}
 }
@@ -322,11 +325,18 @@ func (s *ghostServer) handleGhost(ctx context.Context, conn *peekConn, chi *clie
 	upR, upW := io.Pipe()
 	downR, downW := io.Pipe()
 
-	// Create ServerMux: decodes frames from upR (POST bodies),
-	// encodes frames to downW (streamed via GET long-poll).
-	encoder := framing.NewEncoder(downW)
-	decoder := framing.NewDecoder(upR)
-	serverMux := mux.NewServerMux(encoder, decoder)
+	// Build FrameWriter/FrameReader chain with optional middleware.
+	var writer framing.FrameWriter = &framing.EncoderWriter{Enc: framing.NewEncoder(downW)}
+	var reader framing.FrameReader = &framing.DecoderReader{Dec: framing.NewDecoder(upR)}
+	if s.wrap != nil {
+		if s.wrap.WrapWriter != nil {
+			writer = s.wrap.WrapWriter(writer)
+		}
+		if s.wrap.WrapReader != nil {
+			reader = s.wrap.WrapReader(reader)
+		}
+	}
+	serverMux := mux.NewServerMux(writer, reader)
 
 	// Derive per-session paths.
 	uploadPath, downloadPath := mux.DerivePaths(sharedSecret)

@@ -442,7 +442,7 @@ func newTestGhostServer(t *testing.T) *ghostServer {
 	clientKP, _ := auth.GenKeyPair()
 	sa, _ := auth.NewServerAuth(serverKP.Private, [][32]byte{clientKP.Public})
 	cfg := &config.ServerConfig{Domain: "test.local"}
-	return NewServer(cfg, cert, sa).(*ghostServer)
+	return NewServer(cfg, cert, sa, nil).(*ghostServer)
 }
 
 func TestHandleIncoming_PeekFailure(t *testing.T) {

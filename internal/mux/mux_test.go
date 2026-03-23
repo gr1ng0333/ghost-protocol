@@ -26,8 +26,8 @@ func setupMuxPair(t *testing.T) (ClientMux, ServerMux) {
 	serverEnc := framing.NewEncoder(downW)
 	serverDec := framing.NewDecoder(upR)
 
-	client := NewClientMux(clientEnc, clientDec)
-	server := NewServerMux(serverEnc, serverDec)
+	client := NewClientMux(&framing.EncoderWriter{Enc: clientEnc}, &framing.DecoderReader{Dec: clientDec})
+	server := NewServerMux(&framing.EncoderWriter{Enc: serverEnc}, &framing.DecoderReader{Dec: serverDec})
 
 	t.Cleanup(func() {
 		client.Close()
@@ -548,7 +548,7 @@ func TestMux_PaddingDiscarded(t *testing.T) {
 
 	serverEnc := framing.NewEncoder(downW)
 	serverDec := framing.NewDecoder(upR)
-	server := NewServerMux(serverEnc, serverDec)
+	server := NewServerMux(&framing.EncoderWriter{Enc: serverEnc}, &framing.DecoderReader{Dec: serverDec})
 
 	t.Cleanup(func() {
 		server.Close()

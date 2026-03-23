@@ -16,8 +16,8 @@ type acceptResult struct {
 
 // serverMux implements ServerMux.
 type serverMux struct {
-	encoder framing.Encoder
-	decoder framing.Decoder
+	writer framing.FrameWriter
+	reader framing.FrameReader
 
 	mu      sync.Mutex
 	streams map[uint32]*stream
@@ -30,12 +30,12 @@ type serverMux struct {
 }
 
 // NewServerMux creates a server-side multiplexer.
-// encoder writes Ghost frames to the outbound connection (downstream to client).
-// decoder reads Ghost frames from the inbound connection (upstream from client).
-func NewServerMux(encoder framing.Encoder, decoder framing.Decoder) ServerMux {
+// writer sends Ghost frames to the outbound connection (downstream to client).
+// reader reads Ghost frames from the inbound connection (upstream from client).
+func NewServerMux(writer framing.FrameWriter, reader framing.FrameReader) ServerMux {
 	m := &serverMux{
-		encoder:  encoder,
-		decoder:  decoder,
+		writer:   writer,
+		reader:   reader,
 		streams:  make(map[uint32]*stream),
 		acceptCh: make(chan acceptResult, 64),
 		writeCh:  make(chan writeReq, 256),
@@ -99,7 +99,7 @@ func (m *serverMux) writeLoop() {
 	for {
 		select {
 		case req := <-m.writeCh:
-			req.errCh <- m.encoder.Encode(req.frame)
+			req.errCh <- m.writer.WriteFrame(req.frame)
 		case <-m.done:
 			return
 		}
@@ -111,7 +111,7 @@ func (m *serverMux) writeLoop() {
 func (m *serverMux) readLoop() {
 	defer m.Close()
 	for {
-		frame, err := m.decoder.Decode()
+		frame, err := m.reader.ReadFrame()
 		if err != nil {
 			return
 		}

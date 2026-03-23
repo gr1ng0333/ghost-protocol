@@ -37,6 +37,18 @@ func (w *postWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// PipelineWrap provides optional FrameWriter/FrameReader middleware
+// for the mux pipeline (e.g., padding/shaping). Both fields are optional;
+// nil means no wrapping (frames pass directly to encoder/from decoder).
+type PipelineWrap struct {
+	// WrapWriter wraps the outbound FrameWriter (encoder).
+	// If non-nil, called with the EncoderWriter and should return a new FrameWriter.
+	WrapWriter func(framing.FrameWriter) framing.FrameWriter
+	// WrapReader wraps the inbound FrameReader (decoder).
+	// If non-nil, called with the DecoderReader and should return a new FrameReader.
+	WrapReader func(framing.FrameReader) framing.FrameReader
+}
+
 // ClientPipeline holds a client mux connected to a transport connection.
 type ClientPipeline struct {
 	// Mux is the client-side multiplexer for opening streams.
@@ -48,9 +60,10 @@ type ClientPipeline struct {
 // NewClientPipeline creates a ClientMux wired to the transport connection.
 // uploadPath is the POST endpoint for upstream frames (client → server).
 // downloadPath is the GET endpoint for downstream frames (server → client, long-poll).
+// wrap provides optional frame middleware (padding/shaping). Pass nil for no wrapping.
 //
 // The returned ClientPipeline owns the mux. Call Close() to clean up.
-func NewClientPipeline(ctx context.Context, conn PipelineConn, uploadPath, downloadPath string) (*ClientPipeline, error) {
+func NewClientPipeline(ctx context.Context, conn PipelineConn, uploadPath, downloadPath string, wrap *PipelineWrap) (*ClientPipeline, error) {
 	downstream, err := conn.Recv(ctx, downloadPath)
 	if err != nil {
 		return nil, fmt.Errorf("mux.NewClientPipeline: downstream: %w", err)
@@ -62,12 +75,22 @@ func NewClientPipeline(ctx context.Context, conn PipelineConn, uploadPath, downl
 		ctx:  ctx,
 	}
 
-	encoder := framing.NewEncoder(upstream)
-	decoder := framing.NewDecoder(downstream)
-	mux := NewClientMux(encoder, decoder)
+	// Build FrameWriter chain: mux → [padder →] encoder → transport
+	var writer framing.FrameWriter = &framing.EncoderWriter{Enc: framing.NewEncoder(upstream)}
+	if wrap != nil && wrap.WrapWriter != nil {
+		writer = wrap.WrapWriter(writer)
+	}
+
+	// Build FrameReader chain: transport → decoder → [unpadder →] mux
+	var reader framing.FrameReader = &framing.DecoderReader{Dec: framing.NewDecoder(downstream)}
+	if wrap != nil && wrap.WrapReader != nil {
+		reader = wrap.WrapReader(reader)
+	}
+
+	mx := NewClientMux(writer, reader)
 
 	return &ClientPipeline{
-		Mux:        mux,
+		Mux:        mx,
 		conn:       conn,
 		downstream: downstream,
 	}, nil

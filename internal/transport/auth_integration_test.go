@@ -57,7 +57,7 @@ func startAuthServer(t *testing.T, sa auth.ServerAuth, fallbackAddr string) (*gh
 		Domain:   "localhost",
 		Fallback: config.FallbackConfig{Addr: fallbackAddr},
 	}
-	srv := NewServer(cfg, cert, sa).(*ghostServer)
+	srv := NewServer(cfg, cert, sa, nil).(*ghostServer)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)

@@ -48,7 +48,7 @@ func main() {
 	}
 
 	// Create server.
-	srv := transport.NewServer(&cfg, tlsCert, sa)
+	srv := transport.NewServer(&cfg, tlsCert, sa, nil)
 
 	// Graceful shutdown on SIGINT/SIGTERM.
 	ctx, cancel := context.WithCancel(context.Background())
