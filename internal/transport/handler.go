@@ -74,8 +74,9 @@ func (h *ghostHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // handlePost copies the POST request body into the upstream pipe,
 // which feeds the ServerMux decoder with Ghost frames.
+// Body is limited to 65536 bytes to prevent memory exhaustion from oversized requests.
 func (h *ghostHandler) handlePost(w http.ResponseWriter, r *http.Request) {
-	_, err := io.Copy(h.upW, r.Body)
+	_, err := io.Copy(h.upW, io.LimitReader(r.Body, 65536))
 	if err != nil {
 		slog.Warn("ghost: POST body copy", "err", err, "remote", r.RemoteAddr)
 		return

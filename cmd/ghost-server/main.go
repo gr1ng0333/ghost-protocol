@@ -228,23 +228,22 @@ func buildServerAuth(ac config.AuthConfig) (auth.ServerAuth, error) {
 	} else {
 		raw, err := hex.DecodeString(ac.ServerPrivateKey)
 		if err != nil || len(raw) != 32 {
-			return nil, fmt.Errorf("invalid server_private_key hex")
+			return nil, fmt.Errorf("invalid server_private_key hex (must be 64 hex chars / 32 bytes)")
 		}
 		copy(serverPriv[:], raw)
 	}
 
-	var clientPubs [][32]byte
-	if ac.ClientPublicKey != "" {
-		raw, err := hex.DecodeString(ac.ClientPublicKey)
-		if err != nil || len(raw) != 32 {
-			return nil, fmt.Errorf("invalid client_public_key hex")
-		}
-		var pub [32]byte
-		copy(pub[:], raw)
-		clientPubs = append(clientPubs, pub)
+	if ac.ClientPublicKey == "" {
+		return nil, fmt.Errorf("auth.client_public_key is required but empty")
 	}
+	raw, err := hex.DecodeString(ac.ClientPublicKey)
+	if err != nil || len(raw) != 32 {
+		return nil, fmt.Errorf("invalid client_public_key hex (must be 64 hex chars / 32 bytes)")
+	}
+	var clientPub [32]byte
+	copy(clientPub[:], raw)
 
-	return auth.NewServerAuth(serverPriv, clientPubs)
+	return auth.NewServerAuth(serverPriv, [][32]byte{clientPub})
 }
 
 // initLogging configures the default slog logger from LogConfig.

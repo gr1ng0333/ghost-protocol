@@ -124,3 +124,29 @@ func TestGhostHandler_UnknownPath(t *testing.T) {
 		t.Fatalf("status = %d, want %d", rr.Code, http.StatusNotFound)
 	}
 }
+
+func TestGhostHandler_PostBodyLimit(t *testing.T) {
+	handler, token, upR, _ := testHandlerSetup(t)
+
+	// Send a body larger than the 65536-byte limit.
+	bigBody := strings.Repeat("A", 70000)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sync", strings.NewReader(bigBody))
+	req.Header.Set("X-Session-Token", token)
+
+	received := make(chan int, 1)
+	go func() {
+		buf, _ := io.ReadAll(upR)
+		received <- len(buf)
+	}()
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	// Close upstream pipe so ReadAll in goroutine completes.
+	handler.upW.Close()
+
+	got := <-received
+	if got > 65536 {
+		t.Errorf("received %d bytes, want at most 65536", got)
+	}
+}
