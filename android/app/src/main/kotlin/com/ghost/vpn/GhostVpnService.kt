@@ -9,19 +9,36 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 
+/**
+ * Foreground [VpnService] that owns the TUN interface and Ghost tunnel.
+ *
+ * Communication with the UI layer happens through the [companion object] fields
+ * ([client], [isRunning], [lastError]) and the Intent actions
+ * [ACTION_CONNECT] / [ACTION_DISCONNECT].
+ */
 class GhostVpnService : VpnService() {
 
     companion object {
         private const val TAG = "GhostVPN"
+
+        /** Intent action to initiate a VPN connection. */
         const val ACTION_CONNECT = "com.ghost.vpn.CONNECT"
+
+        /** Intent action to tear down the VPN connection. */
         const val ACTION_DISCONNECT = "com.ghost.vpn.DISCONNECT"
+
         const val NOTIFICATION_ID = 1001
         const val CHANNEL_ID = "ghost_vpn"
-        private const val PREFS_NAME = "ghost_prefs"
-        private const val PREFS_KEY_CONFIG = "ghost_config"
-    }
 
-    private var client: ghost.Client? = null
+        /** The active Ghost client instance, or `null` when disconnected. */
+        var client: ghost.Client? = null
+
+        /** `true` between a successful [ghost.Ghost.start] and [disconnect]. */
+        var isRunning: Boolean = false
+
+        /** The last error message if the connection attempt failed. */
+        var lastError: String? = null
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
@@ -32,6 +49,16 @@ class GhostVpnService : VpnService() {
     }
 
     private fun connect() {
+        // 0. Verify configuration exists
+        val configStore = ConfigStore(applicationContext)
+        if (!configStore.isConfigured()) {
+            Log.e(TAG, "Cannot connect — not configured")
+            lastError = "Not configured — open Settings"
+            isRunning = false
+            stopSelf()
+            return
+        }
+
         // 1. Start foreground immediately (required before any long work on Android 14+)
         val notification = buildNotification(getString(R.string.vpn_connecting))
         ServiceCompat.startForeground(
@@ -67,6 +94,8 @@ class GhostVpnService : VpnService() {
 
         if (pfd == null) {
             Log.e(TAG, "VPN establish returned null — permission revoked?")
+            lastError = "VPN establish failed — permission may have been revoked"
+            isRunning = false
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return
@@ -75,8 +104,8 @@ class GhostVpnService : VpnService() {
         // 4. Transfer fd ownership to Go
         val fd = pfd.detachFd()
 
-        // 5. Load config
-        val configJSON = loadConfig()
+        // 5. Load config from ConfigStore
+        val configJSON = configStore.toConfigJSON()
 
         // 6. Set up Go log callback
         ghost.Ghost.setLogCallback(object : ghost.LogCallback {
@@ -88,10 +117,14 @@ class GhostVpnService : VpnService() {
         // 7. Start Ghost
         try {
             client = ghost.Ghost.start(fd.toLong(), configJSON)
+            isRunning = true
+            lastError = null
             updateNotification(getString(R.string.vpn_connected))
             Log.i(TAG, "Ghost VPN connected")
         } catch (e: Exception) {
             Log.e(TAG, "Ghost start failed", e)
+            lastError = e.message
+            isRunning = false
             // Go didn't take ownership — close fd manually
             try {
                 ParcelFileDescriptor.adoptFd(fd).close()
@@ -110,6 +143,7 @@ class GhostVpnService : VpnService() {
             Log.e(TAG, "Ghost stop error", e)
         }
         client = null
+        isRunning = false
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
         Log.i(TAG, "Ghost VPN disconnected")
@@ -149,23 +183,4 @@ class GhostVpnService : VpnService() {
         manager.notify(NOTIFICATION_ID, notification)
     }
 
-    private fun loadConfig(): String {
-        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-        val config = prefs.getString(PREFS_KEY_CONFIG, null)
-        if (!config.isNullOrBlank()) {
-            return config
-        }
-        // Return placeholder config that will fail — user must configure
-        return """
-            {
-                "server_addr": "CONFIGURE_ME:443",
-                "server_sni": "example.com",
-                "server_public_key": "0000000000000000000000000000000000000000000000000000000000000000",
-                "client_private_key": "0000000000000000000000000000000000000000000000000000000000000000",
-                "shaping_mode": "balanced",
-                "auto_mode": true,
-                "log_level": "info"
-            }
-        """.trimIndent()
-    }
 }
