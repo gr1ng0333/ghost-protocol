@@ -66,12 +66,6 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	conn, err := dialer.Dial(ctx, cfg.Server.Addr, cfg.Server.SNI)
-	if err != nil {
-		slog.Error("failed to dial server", "addr", cfg.Server.Addr, "err", err)
-		os.Exit(1)
-	}
-
 	// Load traffic profile for shaping (optional).
 	var (
 		wrap          *mux.PipelineWrap
@@ -106,32 +100,46 @@ func main() {
 		slog.Info("traffic shaping disabled (no profile found)", "err", err)
 	}
 
-	// Create mux pipeline.
-	uploadPath, downloadPath := mux.DerivePaths(sharedSecret)
-	pipeline, err := mux.NewClientPipeline(ctx, conn, uploadPath, downloadPath, wrap)
-	if err != nil {
-		slog.Error("failed to create pipeline", "err", err)
-		conn.Close()
+	// Create ConnManager with per-pipeline PostConnect wiring.
+	mgr := proxy.NewConnManager(proxy.ConnManagerConfig{
+		Dialer:     dialer,
+		ServerAddr: cfg.Server.Addr,
+		ServerSNI:  cfg.Server.SNI,
+		Pipeline: proxy.PipelineOpts{
+			Wrap:         wrap,
+			SharedSecret: sharedSecret,
+			PostConnect: func(p *mux.ClientPipeline) (cleanup func()) {
+				if wrappedWriter == nil || profile == nil {
+					return nil
+				}
+				pCtx, pCancel := context.WithCancel(ctx)
+
+				cover := shaping.NewCoverGenerator(wrappedWriter, selector, profile, time.Now().UnixNano())
+				cover.Start(pCtx)
+
+				statsAdapter := &muxStatsAdapter{getMuxStats: p.Mux.Stats}
+				updater := shaping.NewStatsUpdater(statsAdapter, timerWriter, cover, 1*time.Second)
+				go updater.Run(pCtx)
+
+				slog.Info("cover traffic generator started")
+
+				return func() {
+					pCancel()
+					cover.Stop()
+				}
+			},
+		},
+		HealthCheck:   5 * time.Second,
+		FreezeTimeout: 10 * time.Second,
+	})
+
+	if err := mgr.Start(ctx); err != nil {
+		slog.Error("initial connection failed", "err", err)
 		os.Exit(1)
 	}
+	defer mgr.Stop()
 
-	// Start cover traffic generator and stats feedback loop.
-	var cover *shaping.CoverGenerator
-	if wrappedWriter != nil && profile != nil {
-		cover = shaping.NewCoverGenerator(wrappedWriter, selector, profile, shapingSeed+2)
-		cover.Start(ctx)
-
-		statsAdapter := &muxStatsAdapter{getMuxStats: pipeline.Mux.Stats}
-		updater := shaping.NewStatsUpdater(statsAdapter, timerWriter, cover, 1*time.Second)
-		go updater.Run(ctx)
-
-		slog.Info("cover traffic generator started")
-	}
-
-	// Create stream opener for proxy modes.
-	opener := func(ctx context.Context, addr string, port uint16) (proxy.Stream, error) {
-		return pipeline.Mux.Open(ctx, addr, port)
-	}
+	opener := mgr.StreamOpener()
 
 	// Signal handling.
 	sigCh := make(chan os.Signal, 1)
@@ -162,11 +170,7 @@ func main() {
 		slog.Info("received signal, shutting down", "signal", sig)
 
 		cancel()
-		if cover != nil {
-			cover.Stop()
-		}
 		socks5.Close()
-		pipeline.Close()
 
 	case "tun":
 		serverHost, _, err := net.SplitHostPort(cfg.Server.Addr)
@@ -197,11 +201,7 @@ func main() {
 		slog.Info("received signal, shutting down", "signal", sig)
 
 		cancel()
-		if cover != nil {
-			cover.Stop()
-		}
 		tunDev.Stop()
-		pipeline.Close()
 
 	default:
 		slog.Error("unknown proxy mode", "mode", mode)
