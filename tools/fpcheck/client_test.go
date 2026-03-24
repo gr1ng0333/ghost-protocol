@@ -259,6 +259,10 @@ func TestResolveUTLSPreset(t *testing.T) {
 		"HelloChrome_Auto",
 		"HelloChrome_120",
 		"HelloFirefox_Auto",
+		"HelloFirefox_120",
+		"HelloSafari_Auto",
+		"HelloEdge_Auto",
+		"HelloIOS_Auto",
 		"UnknownPreset",
 	}
 	for _, name := range presets {
@@ -266,5 +270,121 @@ func TestResolveUTLSPreset(t *testing.T) {
 		if p == nil {
 			t.Errorf("resolveUTLSPreset(%q) returned nil", name)
 		}
+	}
+}
+
+// ──────── parseEchoResponse error paths ────────
+
+func TestParseEchoResponse_InvalidJSON(t *testing.T) {
+	_, err := parseEchoResponse([]byte("{bad json"))
+	if err == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+}
+
+func TestParseEchoResponse_EmptyResponse(t *testing.T) {
+	ref, err := parseEchoResponse([]byte("{}"))
+	if err != nil {
+		t.Fatalf("parseEchoResponse: %v", err)
+	}
+	// Should return Reference with default values
+	if ref == nil {
+		t.Fatal("ref is nil")
+	}
+	if len(ref.TLS.CipherSuites) != 0 {
+		t.Errorf("CipherSuites = %d, want 0", len(ref.TLS.CipherSuites))
+	}
+	if len(ref.TLS.Extensions) != 0 {
+		t.Errorf("Extensions = %d, want 0", len(ref.TLS.Extensions))
+	}
+}
+
+// ──────── parseExtensionIDs edge cases ────────
+
+func TestParseExtensionIDs_NoMatch(t *testing.T) {
+	exts := []echoExtension{
+		{Name: "unknown_without_parentheses"},
+		{Name: "also unknown ()"},
+	}
+	ids := parseExtensionIDs(exts)
+	if len(ids) != 0 {
+		t.Errorf("expected 0 IDs, got %d", len(ids))
+	}
+}
+
+func TestParseExtensionIDs_Empty(t *testing.T) {
+	ids := parseExtensionIDs(nil)
+	if len(ids) != 0 {
+		t.Errorf("expected 0 IDs, got %d", len(ids))
+	}
+}
+
+// ──────── parseCipherSuites edge cases ────────
+
+func TestParseCipherSuites_AllKnown(t *testing.T) {
+	names := []string{
+		"TLS_AES_128_GCM_SHA256",
+		"TLS_AES_256_GCM_SHA384",
+		"TLS_CHACHA20_POLY1305_SHA256",
+		"TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+		"TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+		"TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
+		"TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+		"TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256",
+		"TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256",
+		"TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA",
+		"TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA",
+		"TLS_RSA_WITH_AES_128_GCM_SHA256",
+		"TLS_RSA_WITH_AES_256_GCM_SHA384",
+		"TLS_RSA_WITH_AES_128_CBC_SHA",
+		"TLS_RSA_WITH_AES_256_CBC_SHA",
+	}
+	ids := parseCipherSuites(names)
+	if len(ids) != 15 {
+		t.Errorf("parseCipherSuites returned %d, want 15", len(ids))
+	}
+}
+
+func TestParseCipherSuites_Empty(t *testing.T) {
+	ids := parseCipherSuites(nil)
+	if len(ids) != 0 {
+		t.Errorf("parseCipherSuites(nil) returned %d, want 0", len(ids))
+	}
+}
+
+// ──────── parseAkamaiFingerprint edge cases ────────
+
+func TestParseAkamaiFingerprint_PartialParts(t *testing.T) {
+	// Only settings
+	h2 := parseAkamaiFingerprint("1:65536")
+	if h2.Settings != "1:65536" {
+		t.Errorf("Settings = %q", h2.Settings)
+	}
+	if h2.WindowUpdate != 0 {
+		t.Errorf("WindowUpdate = %d, want 0", h2.WindowUpdate)
+	}
+
+	// Settings + window update
+	h2 = parseAkamaiFingerprint("1:65536|12345")
+	if h2.WindowUpdate != 12345 {
+		t.Errorf("WindowUpdate = %d, want 12345", h2.WindowUpdate)
+	}
+
+	// Settings + window update + priority (no PSH)
+	h2 = parseAkamaiFingerprint("1:65536|12345|3")
+	if h2.Priority != 3 {
+		t.Errorf("Priority = %d, want 3", h2.Priority)
+	}
+
+	// Invalid window update value
+	h2 = parseAkamaiFingerprint("1:65536|notanumber|0|m,a,s,p")
+	if h2.WindowUpdate != 0 {
+		t.Errorf("WindowUpdate = %d, want 0 for invalid value", h2.WindowUpdate)
+	}
+
+	// Invalid priority value
+	h2 = parseAkamaiFingerprint("1:65536|0|notanumber|m,a,s,p")
+	if h2.Priority != 0 {
+		t.Errorf("Priority = %d, want 0 for invalid value", h2.Priority)
 	}
 }
