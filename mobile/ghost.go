@@ -8,9 +8,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"ghost/internal/auth"
@@ -20,6 +22,52 @@ import (
 	"ghost/internal/shaping"
 	"ghost/internal/transport"
 )
+
+// ────────────────────── Socket Protection ────────────────────────
+
+// SocketProtector is implemented by the Android VpnService to protect
+// transport sockets from being routed through the VPN tunnel.
+// The Protect method must be called on a socket fd BEFORE connect().
+type SocketProtector interface {
+	// Protect marks the socket to bypass the VPN tunnel.
+	// Returns true on success, false on failure.
+	Protect(fd int32) bool
+}
+
+var socketProtector SocketProtector
+
+// SetSocketProtector registers the Android VpnService socket protector.
+// Must be called before Start().
+func SetSocketProtector(p SocketProtector) {
+	socketProtector = p
+}
+
+// protectedDialer returns a net.Dialer whose Control function calls
+// the registered SocketProtector on each new socket.
+// NOTE: Currently unused because internal/transport.h2Dialer creates its own
+// net.Dialer locally. To integrate, transport.NewDialer (or H2Config) needs
+// a NetDialer *net.Dialer field so mobile/ can pass protectedDialer() through.
+// Until then, addDisallowedApplication(packageName) in the Android VPN Builder
+// prevents routing loops as a fallback.
+func protectedDialer() *net.Dialer {
+	return &net.Dialer{
+		Control: func(network, address string, c syscall.RawConn) error {
+			if socketProtector == nil {
+				return nil // No protector registered, skip
+			}
+			var protectErr error
+			controlErr := c.Control(func(fd uintptr) {
+				if !socketProtector.Protect(int32(fd)) {
+					protectErr = fmt.Errorf("VpnService.protect(%d) failed", fd)
+				}
+			})
+			if controlErr != nil {
+				return fmt.Errorf("rawconn control: %w", controlErr)
+			}
+			return protectErr
+		},
+	}
+}
 
 // ──────────────────────────── Logging ────────────────────────────
 

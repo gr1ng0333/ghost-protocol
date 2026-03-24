@@ -36,6 +36,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -216,6 +217,46 @@ fun SettingsScreen(
                 selectedValue = logLevel,
                 onSelected = { logLevel = it }
             )
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            // ---- Boot section ----
+            SectionHeader("Startup")
+
+            val context = LocalContext.current
+            var autoConnectOnBoot by remember {
+                mutableStateOf(
+                    context.getSharedPreferences("ghost_config", android.content.Context.MODE_PRIVATE)
+                        .getBoolean("auto_connect_on_boot", false)
+                )
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 8.dp),
+                horizontalArrangement = androidx.compose.foundation.layout.Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Auto-connect on boot", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        "Automatically connect when device starts",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = autoConnectOnBoot,
+                    onCheckedChange = { enabled ->
+                        autoConnectOnBoot = enabled
+                        context.getSharedPreferences("ghost_config", android.content.Context.MODE_PRIVATE)
+                            .edit()
+                            .putBoolean("auto_connect_on_boot", enabled)
+                            .apply()
+                    }
+                )
+            }
 
             Spacer(modifier = Modifier.height(24.dp))
 
