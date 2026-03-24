@@ -778,6 +778,34 @@ func TestCoverage_Roundtrip_MinimalFrame(t *testing.T) {
 	}
 }
 
+func TestDecodeOpenPayload_TrailingBytes(t *testing.T) {
+	// Encode a valid IPv4 payload, then append trailing garbage.
+	op := &OpenPayload{Proto: ProtoTCP, AddrType: AddrIPv4, Addr: "93.184.216.34", Port: 443}
+	data, err := EncodeOpenPayload(op)
+	if err != nil {
+		t.Fatalf("EncodeOpenPayload: %v", err)
+	}
+	data = append(data, 0xFF, 0xFE) // trailing bytes
+	_, err = DecodeOpenPayload(data)
+	if !errors.Is(err, ErrFrameCorrupt) {
+		t.Errorf("expected ErrFrameCorrupt for trailing bytes, got %v", err)
+	}
+}
+
+func TestDecodeOpenPayload_UnknownProto(t *testing.T) {
+	// Valid IPv4 payload but with an unknown proto value.
+	op := &OpenPayload{Proto: ProtoTCP, AddrType: AddrIPv4, Addr: "93.184.216.34", Port: 443}
+	data, err := EncodeOpenPayload(op)
+	if err != nil {
+		t.Fatalf("EncodeOpenPayload: %v", err)
+	}
+	data[0] = 0xFF // unknown proto
+	_, err = DecodeOpenPayload(data)
+	if !errors.Is(err, ErrFrameCorrupt) {
+		t.Errorf("expected ErrFrameCorrupt for unknown proto, got %v", err)
+	}
+}
+
 func TestCoverage_Encode_PaddingWriteError(t *testing.T) {
 	// Writer that succeeds on header and payload writes but fails on padding
 	f := &Frame{

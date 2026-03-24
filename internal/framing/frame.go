@@ -136,8 +136,13 @@ func DecodeOpenPayload(data []byte) (*OpenPayload, error) {
 		return nil, fmt.Errorf("decode open payload: data too short (%d bytes): %w", len(data), ErrFrameCorrupt)
 	}
 
+	proto := Proto(data[0])
+	if proto != ProtoTCP && proto != ProtoUDP {
+		return nil, fmt.Errorf("decode open payload: unknown proto 0x%02x: %w", proto, ErrFrameCorrupt)
+	}
+
 	op := &OpenPayload{
-		Proto:    Proto(data[0]),
+		Proto:    proto,
 		AddrType: AddrType(data[1]),
 	}
 	rest := data[2:]
@@ -174,5 +179,11 @@ func DecodeOpenPayload(data []byte) (*OpenPayload, error) {
 	}
 
 	op.Port = binary.BigEndian.Uint16(rest[:2])
+	rest = rest[2:]
+
+	if len(rest) != 0 {
+		return nil, fmt.Errorf("decode open payload: %d trailing bytes: %w", len(rest), ErrFrameCorrupt)
+	}
+
 	return op, nil
 }

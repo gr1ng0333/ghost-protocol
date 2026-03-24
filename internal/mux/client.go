@@ -87,14 +87,6 @@ func (m *clientMux) Open(ctx context.Context, addr string, port uint16) (Stream,
 		return nil, fmt.Errorf("mux.ClientMux.Open: encode open payload: %w", err)
 	}
 
-	if err := m.sendFrame(&framing.Frame{
-		Type:     framing.FrameOpen,
-		StreamID: streamID,
-		Payload:  payload,
-	}); err != nil {
-		return nil, fmt.Errorf("mux.ClientMux.Open: %w", err)
-	}
-
 	s := newStream(streamID, m.makeWriteFn(streamID), m.makeCloseFn(streamID), m.makeCloseWriteFn(streamID))
 
 	m.mu.Lock()
@@ -102,6 +94,19 @@ func (m *clientMux) Open(ctx context.Context, addr string, port uint16) (Stream,
 	m.stats.TotalOpened++
 	m.stats.ActiveStreams++
 	m.mu.Unlock()
+
+	if err := m.sendFrame(&framing.Frame{
+		Type:     framing.FrameOpen,
+		StreamID: streamID,
+		Payload:  payload,
+	}); err != nil {
+		m.mu.Lock()
+		delete(m.streams, streamID)
+		m.stats.ActiveStreams--
+		m.stats.TotalOpened--
+		m.mu.Unlock()
+		return nil, fmt.Errorf("mux.ClientMux.Open: %w", err)
+	}
 
 	return s, nil
 }

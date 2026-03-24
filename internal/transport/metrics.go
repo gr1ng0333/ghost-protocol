@@ -62,10 +62,13 @@ func (m *Metrics) SessionOpened() {
 }
 
 // SessionClosed decrements active session counter.
+// Guards against going negative from duplicate or spurious close calls.
 func (m *Metrics) SessionClosed() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.activeSessions--
+	if m.activeSessions > 0 {
+		m.activeSessions--
+	}
 }
 
 // AddBytesSent adds n to total bytes sent counter.

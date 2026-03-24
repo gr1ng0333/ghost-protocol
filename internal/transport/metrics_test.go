@@ -135,3 +135,26 @@ func TestMetrics_Reconnect(t *testing.T) {
 		t.Errorf("ReconnectCount = %d, want 3", snap.ReconnectCount)
 	}
 }
+
+func TestMetrics_SessionClosed_NeverNegative(t *testing.T) {
+	m := NewMetrics()
+
+	// Close without any opens — should stay at 0, not go negative.
+	m.SessionClosed()
+	m.SessionClosed()
+
+	snap := m.Snapshot()
+	if snap.ActiveSessions != 0 {
+		t.Errorf("ActiveSessions = %d, want 0 (should not go negative)", snap.ActiveSessions)
+	}
+
+	// Open one, close two — should stay at 0.
+	m.SessionOpened()
+	m.SessionClosed()
+	m.SessionClosed()
+
+	snap = m.Snapshot()
+	if snap.ActiveSessions != 0 {
+		t.Errorf("ActiveSessions = %d, want 0 after double close", snap.ActiveSessions)
+	}
+}
