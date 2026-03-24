@@ -431,3 +431,84 @@ func TestPad_NoiseFrameInjection(t *testing.T) {
 		t.Error("expected at least one noise frame injection across 200 seeds")
 	}
 }
+
+// --- Profile.Validate() tests ---
+
+func TestProfile_Validate_Valid(t *testing.T) {
+	p := &Profile{
+		Name: "test",
+		SizeDist: Distribution{
+			Type:   "lognormal",
+			Params: []float64{6.5, 1.2},
+		},
+		TimingDist: Distribution{
+			Type:   "uniform",
+			Params: []float64{5, 50},
+		},
+		BurstConf: BurstConfig{
+			MinBurstBytes: 100,
+			MaxBurstBytes: 1000,
+		},
+	}
+	if err := p.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestProfile_Validate_UnknownDistType(t *testing.T) {
+	p := &Profile{
+		SizeDist:   Distribution{Type: "invalid", Params: []float64{1}},
+		TimingDist: Distribution{Type: "uniform", Params: []float64{1, 2}},
+	}
+	if err := p.Validate(); err == nil {
+		t.Fatal("expected error for unknown distribution type")
+	}
+}
+
+func TestProfile_Validate_EmptyParams(t *testing.T) {
+	p := &Profile{
+		SizeDist:   Distribution{Type: "pareto"},
+		TimingDist: Distribution{Type: "uniform", Params: []float64{1, 2}},
+	}
+	if err := p.Validate(); err == nil {
+		t.Fatal("expected error for empty params")
+	}
+}
+
+func TestProfile_Validate_EmpiricalEmptySamples(t *testing.T) {
+	p := &Profile{
+		SizeDist:   Distribution{Type: "empirical", Samples: []float64{}},
+		TimingDist: Distribution{Type: "uniform", Params: []float64{1, 2}},
+	}
+	if err := p.Validate(); err == nil {
+		t.Fatal("expected error for empty empirical samples")
+	}
+}
+
+func TestProfile_Validate_BurstMinGtMax(t *testing.T) {
+	p := &Profile{
+		SizeDist:   Distribution{Type: "lognormal", Params: []float64{6.5, 1.2}},
+		TimingDist: Distribution{Type: "uniform", Params: []float64{1, 2}},
+		BurstConf: BurstConfig{
+			MinBurstBytes: 2000,
+			MaxBurstBytes: 100,
+		},
+	}
+	if err := p.Validate(); err == nil {
+		t.Fatal("expected error for burst min > max")
+	}
+}
+
+func TestProfile_Validate_PauseMinGtMax(t *testing.T) {
+	p := &Profile{
+		SizeDist:   Distribution{Type: "lognormal", Params: []float64{6.5, 1.2}},
+		TimingDist: Distribution{Type: "uniform", Params: []float64{1, 2}},
+		BurstConf: BurstConfig{
+			MinPauseMs: 500,
+			MaxPauseMs: 100,
+		},
+	}
+	if err := p.Validate(); err == nil {
+		t.Fatal("expected error for pause min > max")
+	}
+}

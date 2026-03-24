@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"time"
 )
 
 type socks5Server struct {
@@ -58,6 +59,9 @@ func (s *socks5Server) ListenAndServe(ctx context.Context, addr string, tunnel S
 func (s *socks5Server) handleConn(ctx context.Context, clientConn net.Conn, tunnel StreamOpener) {
 	defer clientConn.Close()
 
+	// Set deadline for SOCKS5 handshake phase to prevent slow-client DoS.
+	clientConn.SetDeadline(time.Now().Add(30 * time.Second))
+
 	sc := &socks5Conn{conn: clientConn}
 
 	if err := sc.Handshake(); err != nil {
@@ -70,6 +74,9 @@ func (s *socks5Server) handleConn(ctx context.Context, clientConn net.Conn, tunn
 		slog.Warn("socks5 request failed", "remote", clientConn.RemoteAddr(), "err", err)
 		return
 	}
+
+	// Clear deadline for data relay phase.
+	clientConn.SetDeadline(time.Time{})
 
 	slog.Info("socks5 connect", "remote", clientConn.RemoteAddr(), "dest", addr, "port", port)
 

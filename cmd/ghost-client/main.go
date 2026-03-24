@@ -33,6 +33,11 @@ func main() {
 	}
 	cfg.Defaults()
 
+	if err := cfg.Validate(); err != nil {
+		slog.Error("invalid config", "err", err)
+		os.Exit(1)
+	}
+
 	// Setup logging.
 	initLogging(cfg.Log)
 
@@ -82,7 +87,7 @@ func main() {
 		shapingSeed = time.Now().UnixNano()
 		padder := shaping.NewProfilePadder(profile, shapingSeed)
 		timer := shaping.NewProfileTimer(profile, shapingSeed+1)
-		selector = shaping.NewAdaptiveSelector(shaping.ModePerformance, false)
+		selector = shaping.NewAdaptiveSelector(parseShapingMode(cfg.Shaping.DefaultMode), cfg.Shaping.AutoMode)
 
 		wrap = &mux.PipelineWrap{
 			WrapWriter: func(w framing.FrameWriter) framing.FrameWriter {
@@ -282,4 +287,16 @@ func initLogging(cfg config.LogConfig) {
 		handler = slog.NewJSONHandler(out, opts)
 	}
 	slog.SetDefault(slog.New(handler))
+}
+
+// parseShapingMode maps a config string to a shaping.Mode constant.
+func parseShapingMode(s string) shaping.Mode {
+	switch strings.ToLower(s) {
+	case "stealth":
+		return shaping.ModeStealth
+	case "performance":
+		return shaping.ModePerformance
+	default:
+		return shaping.ModeBalanced
+	}
 }

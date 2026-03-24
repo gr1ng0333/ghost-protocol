@@ -303,9 +303,9 @@ func TestTimerFrameWriter_WithDelay(t *testing.T) {
 	}
 	elapsed := time.Since(start)
 
-	// 3 frames × 10ms delay each = at least 30ms.
-	if elapsed < 30*time.Millisecond {
-		t.Errorf("elapsed %v, want >= 30ms", elapsed)
+	// 3 frames × 10ms delay halved for ModeBalanced = 3 × 5ms = at least 15ms.
+	if elapsed < 15*time.Millisecond {
+		t.Errorf("elapsed %v, want >= 15ms", elapsed)
 	}
 }
 

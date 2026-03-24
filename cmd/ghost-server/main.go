@@ -34,6 +34,12 @@ func main() {
 		os.Exit(1)
 	}
 	cfg.Defaults()
+
+	if err := cfg.Validate(); err != nil {
+		slog.Error("invalid config", "err", err)
+		os.Exit(1)
+	}
+
 	initLogging(cfg.Log)
 
 	// Create certificate manager.

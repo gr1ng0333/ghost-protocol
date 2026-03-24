@@ -316,3 +316,124 @@ shaping:
 		t.Errorf("Shaping.ProfileDir = %q, want %q", cfg.Shaping.ProfileDir, "profiles/")
 	}
 }
+
+// --- Validate() tests ---
+
+// validHex64 returns a valid 64-char hex string (32 bytes).
+func validHex64() string {
+	return "e858568789b3522748dfba5542d367ac7e7d672b6d221bdef72c6cfd4480e623"
+}
+
+func TestClientConfig_Validate_Valid(t *testing.T) {
+	cfg := ClientConfig{
+		Server: ServerEndpoint{Addr: "example.com:443"},
+		Auth: AuthConfig{
+			ServerPublicKey:  validHex64(),
+			ClientPrivateKey: validHex64(),
+		},
+		Shaping: ShapingConfig{DefaultMode: "balanced"},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestClientConfig_Validate_MissingServerAddr(t *testing.T) {
+	cfg := ClientConfig{
+		Auth: AuthConfig{
+			ServerPublicKey:  validHex64(),
+			ClientPrivateKey: validHex64(),
+		},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for missing server.addr")
+	}
+}
+
+func TestClientConfig_Validate_AddrMissingPort(t *testing.T) {
+	cfg := ClientConfig{
+		Server: ServerEndpoint{Addr: "example.com"},
+		Auth: AuthConfig{
+			ServerPublicKey:  validHex64(),
+			ClientPrivateKey: validHex64(),
+		},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for addr without port")
+	}
+}
+
+func TestClientConfig_Validate_MissingServerPublicKey(t *testing.T) {
+	cfg := ClientConfig{
+		Server: ServerEndpoint{Addr: "example.com:443"},
+		Auth: AuthConfig{
+			ClientPrivateKey: validHex64(),
+		},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for missing server_public_key")
+	}
+}
+
+func TestClientConfig_Validate_InvalidHexKey(t *testing.T) {
+	cfg := ClientConfig{
+		Server: ServerEndpoint{Addr: "example.com:443"},
+		Auth: AuthConfig{
+			ServerPublicKey:  "not-hex",
+			ClientPrivateKey: validHex64(),
+		},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for invalid hex key")
+	}
+}
+
+func TestClientConfig_Validate_ShortHexKey(t *testing.T) {
+	cfg := ClientConfig{
+		Server: ServerEndpoint{Addr: "example.com:443"},
+		Auth: AuthConfig{
+			ServerPublicKey:  "abcd",
+			ClientPrivateKey: validHex64(),
+		},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for short hex key")
+	}
+}
+
+func TestClientConfig_Validate_InvalidShapingMode(t *testing.T) {
+	cfg := ClientConfig{
+		Server: ServerEndpoint{Addr: "example.com:443"},
+		Auth: AuthConfig{
+			ServerPublicKey:  validHex64(),
+			ClientPrivateKey: validHex64(),
+		},
+		Shaping: ShapingConfig{DefaultMode: "turbo"},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for invalid shaping mode")
+	}
+}
+
+func TestServerConfig_Validate_Valid(t *testing.T) {
+	cfg := ServerConfig{
+		Auth: AuthConfig{
+			ServerPrivateKey: validHex64(),
+			ClientPublicKey:  validHex64(),
+		},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestServerConfig_Validate_MissingClientPublicKey(t *testing.T) {
+	cfg := ServerConfig{
+		Auth: AuthConfig{
+			ServerPrivateKey: validHex64(),
+		},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for missing client_public_key")
+	}
+}

@@ -1,8 +1,10 @@
 package config
 
 import (
+	"encoding/hex"
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -164,5 +166,71 @@ func Load(path string, target interface{}) error {
 		return fmt.Errorf("config.Load(%s): %w", path, err)
 	}
 
+	return nil
+}
+
+// validShapingModes lists the accepted shaping mode strings.
+var validShapingModes = map[string]bool{
+	"":            true, // empty = use default
+	"stealth":     true,
+	"balanced":    true,
+	"performance": true,
+}
+
+// validateHexKey checks that s is a valid hex string decoding to exactly 32 bytes.
+func validateHexKey(s, name string) error {
+	raw, err := hex.DecodeString(s)
+	if err != nil {
+		return fmt.Errorf("%s: invalid hex: %w", name, err)
+	}
+	if len(raw) != 32 {
+		return fmt.Errorf("%s: expected 32 bytes (64 hex chars), got %d bytes", name, len(raw))
+	}
+	return nil
+}
+
+// Validate checks that all required ClientConfig fields are present and well-formed.
+func (c *ClientConfig) Validate() error {
+	if c.Server.Addr == "" {
+		return fmt.Errorf("config: server.addr is required")
+	}
+	if !strings.Contains(c.Server.Addr, ":") {
+		return fmt.Errorf("config: server.addr must contain a port (host:port)")
+	}
+	if c.Auth.ServerPublicKey == "" {
+		return fmt.Errorf("config: auth.server_public_key is required")
+	}
+	if err := validateHexKey(c.Auth.ServerPublicKey, "auth.server_public_key"); err != nil {
+		return err
+	}
+	if c.Auth.ClientPrivateKey == "" {
+		return fmt.Errorf("config: auth.client_private_key is required")
+	}
+	if err := validateHexKey(c.Auth.ClientPrivateKey, "auth.client_private_key"); err != nil {
+		return err
+	}
+	if !validShapingModes[strings.ToLower(c.Shaping.DefaultMode)] {
+		return fmt.Errorf("config: shaping.default_mode %q is not valid (use stealth, balanced, or performance)", c.Shaping.DefaultMode)
+	}
+	return nil
+}
+
+// Validate checks that all required ServerConfig fields are present and well-formed.
+func (c *ServerConfig) Validate() error {
+	if c.Auth.ServerPrivateKey == "" {
+		return fmt.Errorf("config: auth.server_private_key is required")
+	}
+	if err := validateHexKey(c.Auth.ServerPrivateKey, "auth.server_private_key"); err != nil {
+		return err
+	}
+	if c.Auth.ClientPublicKey == "" {
+		return fmt.Errorf("config: auth.client_public_key is required")
+	}
+	if err := validateHexKey(c.Auth.ClientPublicKey, "auth.client_public_key"); err != nil {
+		return err
+	}
+	if !validShapingModes[strings.ToLower(c.Shaping.DefaultMode)] {
+		return fmt.Errorf("config: shaping.default_mode %q is not valid (use stealth, balanced, or performance)", c.Shaping.DefaultMode)
+	}
 	return nil
 }

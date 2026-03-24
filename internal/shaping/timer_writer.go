@@ -42,6 +42,9 @@ func (tw *TimerFrameWriter) WriteFrame(f *framing.Frame) error {
 		tw.mu.Unlock()
 
 		delay := tw.Timer.Delay(burstBytes, burstFrames)
+		if mode == ModeBalanced {
+			delay /= 2
+		}
 		if delay > 0 {
 			time.Sleep(delay)
 		}
