@@ -20,6 +20,7 @@ type ClientConfig struct {
 type ServerConfig struct {
 	Listen   string         `yaml:"listen"`
 	Domain   string         `yaml:"domain"`
+	TLS      TLSConfig      `yaml:"tls"`
 	Auth     AuthConfig     `yaml:"auth"`
 	Backend  BackendConfig  `yaml:"backend"`
 	Shaping  ShapingConfig  `yaml:"shaping"`
@@ -59,6 +60,7 @@ type ProxyConfig struct {
 // ShapingConfig configures traffic shaping.
 type ShapingConfig struct {
 	DefaultMode string `yaml:"default_mode"`
+	ProfilePath string `yaml:"profile_path"`
 	ProfileDir  string `yaml:"profile_dir"`
 	AutoMode    bool   `yaml:"auto_mode"`
 }
@@ -75,10 +77,72 @@ type FallbackConfig struct {
 	UseCaddy bool   `yaml:"use_caddy"`
 }
 
+// TLSConfig configures server TLS certificate management.
+type TLSConfig struct {
+	CertFile string `yaml:"cert_file"`
+	KeyFile  string `yaml:"key_file"`
+	AutoCert bool   `yaml:"auto_cert"`
+	Email    string `yaml:"email"`
+	CacheDir string `yaml:"cache_dir"`
+}
+
 // LogConfig configures logging.
 type LogConfig struct {
 	Level string `yaml:"level"`
 	File  string `yaml:"file"`
+}
+
+// Defaults fills zero-value fields with sensible defaults.
+func (c *ServerConfig) Defaults() {
+	if c.Listen == "" {
+		c.Listen = ":443"
+	}
+	if c.Sessions.MaxSessions == 0 {
+		c.Sessions.MaxSessions = 10
+	}
+	if c.Sessions.IdleTimeoutSec == 0 {
+		c.Sessions.IdleTimeoutSec = 300
+	}
+	if c.Shaping.DefaultMode == "" {
+		c.Shaping.DefaultMode = "balanced"
+	}
+	if c.Shaping.ProfilePath == "" {
+		c.Shaping.ProfilePath = "profiles/chrome_browsing.json"
+	}
+	if c.TLS.CacheDir == "" {
+		c.TLS.CacheDir = "/var/lib/ghost/certs"
+	}
+	if c.Fallback.Addr == "" {
+		c.Fallback.Addr = "127.0.0.1:8080"
+	}
+	if c.Log.Level == "" {
+		c.Log.Level = "info"
+	}
+	if c.Log.File == "" {
+		c.Log.File = "stdout"
+	}
+}
+
+// Defaults fills zero-value fields with sensible defaults.
+func (c *ClientConfig) Defaults() {
+	if c.Shaping.DefaultMode == "" {
+		c.Shaping.DefaultMode = "balanced"
+	}
+	if c.Shaping.ProfilePath == "" {
+		c.Shaping.ProfilePath = "profiles/chrome_browsing.json"
+	}
+	if c.Proxy.Mode == "" {
+		c.Proxy.Mode = "socks5"
+	}
+	if c.Proxy.Socks5 == "" {
+		c.Proxy.Socks5 = "127.0.0.1:1080"
+	}
+	if c.Log.Level == "" {
+		c.Log.Level = "info"
+	}
+	if c.Log.File == "" {
+		c.Log.File = "stdout"
+	}
 }
 
 // Load reads a YAML config file and unmarshals into the given target.

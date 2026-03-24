@@ -30,6 +30,7 @@ func main() {
 		slog.Error("failed to load config", "path", *cfgPath, "err", err)
 		os.Exit(1)
 	}
+	cfg.Defaults()
 
 	// Setup logging.
 	setupLog(cfg.Log)
@@ -75,7 +76,7 @@ func main() {
 		wrappedWriter framing.FrameWriter
 		shapingSeed   int64
 	)
-	if p, err := shaping.LoadProfile("profiles/chrome_browsing.json"); err == nil {
+	if p, err := shaping.LoadProfile(cfg.Shaping.ProfilePath); err == nil {
 		profile = p
 		shapingSeed = time.Now().UnixNano()
 		padder := shaping.NewProfilePadder(profile, shapingSeed)

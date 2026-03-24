@@ -283,12 +283,22 @@ func TestServer_UnauthenticatedFallback(t *testing.T) {
 	clientKP, _ := auth.GenKeyPair()
 	sa, _ := auth.NewServerAuth(serverKP.Private, [][32]byte{clientKP.Public})
 
-	// Start a mock fallback that does a TLS handshake and serves HTTP.
-	fallbackCert, err := GenerateSelfSignedCert("fallback.local")
+	// Start a plain HTTP fallback (Ghost terminates TLS, proxies plaintext).
+	fallbackGotReq := make(chan struct{}, 4)
+	fallbackMux := http.NewServeMux()
+	fallbackMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		fallbackGotReq <- struct{}{}
+		w.Header().Set("Connection", "close")
+		w.Write([]byte("fallback-caddy"))
+	})
+	fallbackLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("GenerateSelfSignedCert: %v", err)
+		t.Fatalf("fallback listen: %v", err)
 	}
-	fallbackAddr, fallbackGotReq := startMockFallbackTLS(t, fallbackCert)
+	fallbackSrv := &http.Server{Handler: fallbackMux}
+	go fallbackSrv.Serve(fallbackLn)
+	t.Cleanup(func() { fallbackSrv.Close(); fallbackLn.Close() })
+	fallbackAddr := fallbackLn.Addr().String()
 
 	// Start Ghost server.
 	srv, _ := newTestServer(t, sa, fallbackAddr)
@@ -305,7 +315,7 @@ func TestServer_UnauthenticatedFallback(t *testing.T) {
 	}
 	defer tlsConn.Close()
 
-	// Send an HTTP/1.1 request through the spliced connection.
+	// Send an HTTP/1.1 request; Ghost terminates TLS and proxies plaintext to fallback.
 	req := fmt.Sprintf("GET / HTTP/1.1\r\nHost: fallback.local\r\nConnection: close\r\n\r\n")
 	if _, err := tlsConn.Write([]byte(req)); err != nil {
 		t.Fatalf("write HTTP request: %v", err)
@@ -331,52 +341,70 @@ func TestServer_UnauthenticatedFallback(t *testing.T) {
 }
 
 func TestServer_Fallback_SeesValidTLS(t *testing.T) {
+	// Verify that Ghost terminates TLS for unauthenticated connections
+	// and the fallback backend receives plaintext HTTP, NOT raw TLS bytes.
 	serverKP, _ := auth.GenKeyPair()
 	clientKP, _ := auth.GenKeyPair()
 	sa, _ := auth.NewServerAuth(serverKP.Private, [][32]byte{clientKP.Public})
 
-	// Start a raw TCP mock fallback that records the first bytes.
-	fallbackCert, err := GenerateSelfSignedCert("fallback.local")
+	// Start a raw TCP fallback that records the first bytes received.
+	fallbackLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("GenerateSelfSignedCert: %v", err)
+		t.Fatalf("fallback listen: %v", err)
 	}
-	fallbackAddr, fallbackGot := startMockFallback(t, fallbackCert)
+	defer fallbackLn.Close()
+	fallbackAddr := fallbackLn.Addr().String()
+	gotData := make(chan []byte, 1)
+
+	go func() {
+		conn, err := fallbackLn.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		buf := make([]byte, 4096)
+		conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		n, _ := conn.Read(buf)
+		if n > 0 {
+			first := make([]byte, n)
+			copy(first, buf[:n])
+			gotData <- first
+		}
+		// Send minimal HTTP response so client doesn't hang.
+		conn.Write([]byte("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n"))
+	}()
 
 	// Start Ghost server.
 	srv, _ := newTestServer(t, sa, fallbackAddr)
 	srvAddr := srv.Addr().String()
 
-	// Connect as an unauthenticated client — just send a standard TLS ClientHello.
-	conn, err := net.DialTimeout("tcp", srvAddr, 2*time.Second)
+	// Connect with a proper TLS client (unauthenticated → fallback path).
+	tlsConn, err := tls.DialWithDialer(
+		&net.Dialer{Timeout: 3 * time.Second},
+		"tcp", srvAddr,
+		&tls.Config{InsecureSkipVerify: true},
+	)
 	if err != nil {
-		t.Fatalf("dial ghost: %v", err)
+		t.Fatalf("tls.Dial: %v", err)
 	}
-	defer conn.Close()
+	defer tlsConn.Close()
 
-	// Build a ClientHello with a random (wrong) SessionID.
-	random := make([]byte, 32)
-	rand.Read(random)
-	wrongSessionID := make([]byte, 32)
-	rand.Read(wrongSessionID)
-	hello := buildTestClientHello(random, wrongSessionID)
-	conn.Write(hello)
+	// Send an HTTP request over the TLS connection.
+	tlsConn.Write([]byte("GET /test HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"))
 
-	// The mock fallback should receive the replayed ClientHello.
+	// Verify the fallback receives plaintext HTTP (not raw TLS bytes).
 	select {
-	case data := <-fallbackGot:
+	case data := <-gotData:
 		if len(data) == 0 {
 			t.Fatal("fallback received empty data")
 		}
-		if data[0] != 0x16 {
-			t.Errorf("fallback first byte = 0x%02x, want 0x16 (TLS Handshake record)", data[0])
+		// First byte must NOT be 0x16 (TLS Handshake) — Ghost terminates TLS.
+		if data[0] == 0x16 {
+			t.Error("fallback received raw TLS bytes; Ghost should terminate TLS first")
 		}
-		// Verify the fallback received a parseable ClientHello.
-		chi, err := parseClientHello(data)
-		if err != nil {
-			t.Fatalf("fallback received unparseable ClientHello: %v", err)
-		}
-		if !bytes.Equal(chi.Random, random) {
-			t.Errorf("fallback ClientHello.Random mismatch")
+		// Should contain the plaintext HTTP request.
+		if !bytes.Contains(data, []byte("GET /test")) {
+			t.Errorf("fallback did not receive plaintext HTTP request: %q", string(data))
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("fallback did not receive the connection")
@@ -490,29 +518,22 @@ func TestSplice_BidirectionalCopy_E2E(t *testing.T) {
 	clientKP, _ := auth.GenKeyPair()
 	sa, _ := auth.NewServerAuth(serverKP.Private, [][32]byte{clientKP.Public})
 
-	// Start a full TLS mock fallback that serves HTTP.
-	fallbackCert, err := GenerateSelfSignedCert("fallback.local")
-	if err != nil {
-		t.Fatalf("GenerateSelfSignedCert: %v", err)
-	}
-
-	// Create a proper HTTP server on the fallback side.
-	mux := http.NewServeMux()
-	mux.HandleFunc("/test", func(w http.ResponseWriter, r *http.Request) {
+	// Create a plain HTTP fallback server (Ghost terminates TLS, proxies plaintext).
+	fallbackMux := http.NewServeMux()
+	fallbackMux.HandleFunc("/test", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Fallback", "caddy-marker")
 		body, _ := io.ReadAll(r.Body)
 		w.Write(body)
 	})
 
-	fallbackTLSCfg := &tls.Config{Certificates: []tls.Certificate{fallbackCert}}
-	fallbackLn, err := tls.Listen("tcp", "127.0.0.1:0", fallbackTLSCfg)
+	fallbackLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("fallback listen: %v", err)
 	}
 	defer fallbackLn.Close()
 	fallbackAddr := fallbackLn.Addr().String()
 
-	fallbackSrv := &http.Server{Handler: mux}
+	fallbackSrv := &http.Server{Handler: fallbackMux}
 	go fallbackSrv.Serve(fallbackLn)
 	t.Cleanup(func() { fallbackSrv.Close() })
 
@@ -520,7 +541,7 @@ func TestSplice_BidirectionalCopy_E2E(t *testing.T) {
 	srv, _ := newTestServer(t, sa, fallbackAddr)
 	srvAddr := srv.Addr().String()
 
-	// Use a standard TLS client (unauthenticated) — should be spliced to fallback.
+	// Use a standard TLS client (unauthenticated) — Ghost terminates TLS, proxies to fallback.
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		// Force HTTP/1.1 to keep the test simpler.
@@ -528,7 +549,7 @@ func TestSplice_BidirectionalCopy_E2E(t *testing.T) {
 	}
 	client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
 
-	// POST a request through Ghost → splice → fallback.
+	// POST a request through Ghost → TLS termination → fallback.
 	payload := "splice-e2e-test-payload"
 	resp, err := client.Post(
 		fmt.Sprintf("https://%s/test", srvAddr),
@@ -541,14 +562,14 @@ func TestSplice_BidirectionalCopy_E2E(t *testing.T) {
 	defer resp.Body.Close()
 
 	if resp.Header.Get("X-Fallback") != "caddy-marker" {
-		t.Errorf("missing X-Fallback header; response came from Ghost not Caddy?")
+		t.Errorf("missing X-Fallback header; response came from Ghost not fallback?")
 	}
 	body, _ := io.ReadAll(resp.Body)
 	if string(body) != payload {
 		t.Errorf("response body = %q, want %q", body, payload)
 	}
 
-	// Close idle connections so the splice goroutines can finish cleanly.
+	// Close idle connections so the proxy goroutines can finish cleanly.
 	transport.CloseIdleConnections()
 }
 

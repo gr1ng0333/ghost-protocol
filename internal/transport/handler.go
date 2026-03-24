@@ -21,6 +21,9 @@ type ghostHandler struct {
 
 	uploadPath   string // expected POST path
 	downloadPath string // expected GET path
+
+	sessionMgr *SessionManager // optional session lifecycle manager
+	sessionID  string          // session ID for touch tracking
 }
 
 // newGhostHandler creates an HTTP/2 handler wired to the mux pipes.
@@ -46,6 +49,11 @@ func (h *ghostHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("ghost: invalid session token", "remote", r.RemoteAddr, "path", r.URL.Path)
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
+	}
+
+	// Touch session on each HTTP activity.
+	if h.sessionMgr != nil {
+		h.sessionMgr.Touch(h.sessionID)
 	}
 
 	// Route by method and path.

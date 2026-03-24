@@ -1,0 +1,297 @@
+/* Skybridge Systems — Corporate Theme */
+
+:root {
+  --primary: #1a3a5c;
+  --primary-light: #2a5a8c;
+  --accent: #3498db;
+  --text: #2c3e50;
+  --text-light: #6c7a89;
+  --bg: #ffffff;
+  --bg-alt: #f4f6f8;
+  --border: #dce1e6;
+  --max-width: 1100px;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color: var(--text);
+  line-height: 1.6;
+  background: var(--bg);
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+img {
+  max-width: 100%;
+  height: auto;
+}
+
+/* ——— Header / Nav ——— */
+
+header {
+  background: var(--primary);
+  color: #fff;
+  padding: 0 1.5rem;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  box-shadow: 0 2px 6px rgba(0,0,0,.15);
+}
+
+.nav-wrap {
+  max-width: var(--max-width);
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 64px;
+}
+
+.logo {
+  font-size: 1.25rem;
+  font-weight: 700;
+  letter-spacing: .02em;
+  color: #fff;
+  text-decoration: none;
+}
+
+.logo span {
+  color: var(--accent);
+}
+
+nav a {
+  color: rgba(255,255,255,.85);
+  margin-left: 2rem;
+  font-size: .95rem;
+  font-weight: 500;
+  transition: color .2s;
+}
+
+nav a:hover,
+nav a.active {
+  color: #fff;
+  text-decoration: none;
+}
+
+/* ——— Hero ——— */
+
+.hero {
+  background: linear-gradient(135deg, var(--primary) 0%, var(--primary-light) 100%);
+  color: #fff;
+  padding: 5rem 1.5rem;
+  text-align: center;
+}
+
+.hero h1 {
+  font-size: 2.5rem;
+  font-weight: 700;
+  margin-bottom: 1rem;
+}
+
+.hero p {
+  font-size: 1.15rem;
+  max-width: 640px;
+  margin: 0 auto 2rem;
+  opacity: .9;
+}
+
+.btn {
+  display: inline-block;
+  background: var(--accent);
+  color: #fff;
+  padding: .75rem 2rem;
+  border-radius: 4px;
+  font-weight: 600;
+  font-size: 1rem;
+  transition: background .2s;
+}
+
+.btn:hover {
+  background: #2980b9;
+  text-decoration: none;
+}
+
+/* ——— Sections ——— */
+
+.section {
+  max-width: var(--max-width);
+  margin: 0 auto;
+  padding: 4rem 1.5rem;
+}
+
+.section h2 {
+  font-size: 1.75rem;
+  margin-bottom: 1rem;
+  color: var(--primary);
+}
+
+.section p {
+  color: var(--text-light);
+  max-width: 720px;
+}
+
+.section-alt {
+  background: var(--bg-alt);
+}
+
+/* ——— Card Grid ——— */
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 2rem;
+  margin-top: 2rem;
+}
+
+.card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2rem;
+  transition: box-shadow .2s;
+}
+
+.card:hover {
+  box-shadow: 0 4px 12px rgba(0,0,0,.08);
+}
+
+.card h3 {
+  font-size: 1.15rem;
+  margin-bottom: .5rem;
+  color: var(--primary);
+}
+
+.card p {
+  font-size: .95rem;
+  color: var(--text-light);
+}
+
+/* ——— Contact Form ——— */
+
+.contact-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3rem;
+  margin-top: 2rem;
+}
+
+.contact-info p {
+  margin-bottom: .75rem;
+}
+
+.contact-info strong {
+  color: var(--primary);
+}
+
+form label {
+  display: block;
+  margin-bottom: .25rem;
+  font-weight: 500;
+  font-size: .95rem;
+}
+
+form input,
+form textarea {
+  width: 100%;
+  padding: .6rem .8rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: .95rem;
+  font-family: inherit;
+  margin-bottom: 1rem;
+  background: var(--bg);
+}
+
+form input:focus,
+form textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(52,152,219,.15);
+}
+
+form textarea {
+  resize: vertical;
+  min-height: 120px;
+}
+
+form button {
+  cursor: pointer;
+  border: none;
+  font-family: inherit;
+}
+
+/* ——— Footer ——— */
+
+footer {
+  background: var(--primary);
+  color: rgba(255,255,255,.7);
+  text-align: center;
+  padding: 2rem 1.5rem;
+  margin-top: auto;
+  font-size: .9rem;
+}
+
+footer a {
+  color: rgba(255,255,255,.85);
+}
+
+footer a:hover {
+  color: #fff;
+}
+
+/* ——— Utilities ——— */
+
+.text-center { text-align: center; }
+.mt-2 { margin-top: 2rem; }
+
+/* ——— Responsive ——— */
+
+@media (max-width: 768px) {
+  .nav-wrap {
+    flex-direction: column;
+    height: auto;
+    padding: .75rem 0;
+    gap: .5rem;
+  }
+
+  nav a {
+    margin-left: 1rem;
+    font-size: .85rem;
+  }
+
+  .hero {
+    padding: 3rem 1.5rem;
+  }
+
+  .hero h1 {
+    font-size: 1.75rem;
+  }
+
+  .contact-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .section {
+    padding: 2.5rem 1rem;
+  }
+}

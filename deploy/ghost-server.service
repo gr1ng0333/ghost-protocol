@@ -1,0 +1,19 @@
+[Unit]
+Description=Ghost VPN Server
+After=network-online.target caddy.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/ghost-server /etc/ghost/server.yaml
+Restart=always
+RestartSec=5
+LimitNOFILE=65535
+
+# Logging
+StandardOutput=append:/var/log/ghost/server.log
+StandardError=append:/var/log/ghost/server.log
+
+[Install]
+WantedBy=multi-user.target

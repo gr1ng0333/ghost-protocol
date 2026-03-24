@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -12,8 +13,6 @@ import (
 
 	"ghost/internal/auth"
 	"ghost/internal/config"
-	"ghost/internal/framing"
-	"ghost/internal/mux"
 	"ghost/internal/shaping"
 	"ghost/internal/transport"
 )
@@ -31,18 +30,27 @@ func main() {
 		slog.Error("failed to load config", "path", cfgPath, "err", err)
 		os.Exit(1)
 	}
+	cfg.Defaults()
 
-	// Generate self-signed certificate using config domain.
+	// Create certificate manager.
 	domain := cfg.Domain
 	if domain == "" {
 		domain = "localhost"
 	}
-	tlsCert, err := transport.GenerateSelfSignedCert(domain)
+	certMgr, err := transport.NewCertManager(
+		domain,
+		cfg.TLS.AutoCert,
+		cfg.TLS.Email,
+		cfg.TLS.CacheDir,
+		cfg.TLS.CertFile,
+		cfg.TLS.KeyFile,
+		slog.Default(),
+	)
 	if err != nil {
-		slog.Error("failed to generate TLS certificate", "err", err)
+		slog.Error("failed to create certificate manager", "err", err)
 		os.Exit(1)
 	}
-	slog.Info("generated self-signed certificate", "domain", domain)
+	tlsConfig := certMgr.TLSConfig()
 
 	// Build ServerAuth from config keys.
 	sa, err := buildServerAuth(cfg.Auth)
@@ -51,37 +59,63 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Load traffic profile for shaping (optional).
-	// TODO(stage-5): Wire CoverGenerator + StatsUpdater per-session when session lifecycle management exists.
-	var wrap *mux.PipelineWrap
-	if profile, err := shaping.LoadProfile("profiles/chrome_browsing.json"); err == nil {
-		seed := time.Now().UnixNano()
-		padder := shaping.NewProfilePadder(profile, seed)
-		timer := shaping.NewProfileTimer(profile, seed+1)
-		selector := shaping.NewAdaptiveSelector(shaping.ModePerformance, false)
-
-		wrap = &mux.PipelineWrap{
-			WrapWriter: func(w framing.FrameWriter) framing.FrameWriter {
-				padded := &shaping.PadderFrameWriter{Padder: padder, Next: w}
-				return &shaping.TimerFrameWriter{
-					Timer: timer, Selector: selector, Next: padded,
-				}
-			},
-			WrapReader: func(r framing.FrameReader) framing.FrameReader {
-				return &shaping.UnpadderFrameReader{Padder: padder, Src: r}
-			},
-		}
-		slog.Info("traffic shaping enabled", "profile", profile.Name)
+	// Load traffic shaping profile (optional).
+	profile, profileErr := shaping.LoadProfile(cfg.Shaping.ProfilePath)
+	if profileErr != nil {
+		slog.Info("traffic shaping disabled (no profile found)", "err", profileErr)
 	} else {
-		slog.Info("traffic shaping disabled (no profile found)", "err", err)
+		slog.Info("traffic shaping enabled", "profile", profile.Name)
 	}
 
-	// Create server.
-	srv := transport.NewServer(&cfg, tlsCert, sa, wrap)
+	// Parse shaping mode.
+	var shapingMode shaping.Mode
+	switch cfg.Shaping.DefaultMode {
+	case "stealth":
+		shapingMode = shaping.ModeStealth
+	case "performance":
+		shapingMode = shaping.ModePerformance
+	default:
+		shapingMode = shaping.ModeBalanced
+	}
+
+	// Create session manager.
+	idleTimeout := time.Duration(cfg.Sessions.IdleTimeoutSec) * time.Second
+	sm := transport.NewSessionManager(cfg.Sessions.MaxSessions, idleTimeout, slog.Default())
+
+	// Create server with session management and per-session shaping.
+	srv := transport.NewServerWithSessions(&cfg, tlsConfig, sa, sm, profile, shapingMode, cfg.Shaping.AutoMode)
+
+	// Attach CertManager for ACME support.
+	if gs, ok := srv.(interface{ SetCertManager(*transport.CertManager) }); ok {
+		gs.SetCertManager(certMgr)
+	}
 
 	// Graceful shutdown on SIGINT/SIGTERM.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// Start session cleanup loop.
+	go sm.RunCleanupLoop(ctx, 60*time.Second)
+
+	// Start cert file watcher (manual mode only).
+	certMgr.StartFileWatcher(ctx)
+
+	// Start HTTP-01 challenge handler on :80 (autocert mode only).
+	if h := certMgr.HTTPHandler(); h != nil {
+		go func() {
+			httpSrv := &http.Server{
+				Addr:    ":80",
+				Handler: h,
+			}
+			go func() {
+				<-ctx.Done()
+				httpSrv.Close()
+			}()
+			if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				slog.Error("HTTP-01 listener failed", "err", err)
+			}
+		}()
+	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)

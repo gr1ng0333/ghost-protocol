@@ -155,3 +155,155 @@ func TestLoad_FileNotFound(t *testing.T) {
 	}
 	t.Logf("got expected error: %v", err)
 }
+
+func TestServerConfig_Defaults(t *testing.T) {
+	var cfg ServerConfig
+	cfg.Defaults()
+
+	if cfg.Listen != ":443" {
+		t.Errorf("Listen = %q, want %q", cfg.Listen, ":443")
+	}
+	if cfg.Sessions.MaxSessions != 10 {
+		t.Errorf("Sessions.MaxSessions = %d, want 10", cfg.Sessions.MaxSessions)
+	}
+	if cfg.Sessions.IdleTimeoutSec != 300 {
+		t.Errorf("Sessions.IdleTimeoutSec = %d, want 300", cfg.Sessions.IdleTimeoutSec)
+	}
+	if cfg.Shaping.DefaultMode != "balanced" {
+		t.Errorf("Shaping.DefaultMode = %q, want %q", cfg.Shaping.DefaultMode, "balanced")
+	}
+	if cfg.Shaping.ProfilePath != "profiles/chrome_browsing.json" {
+		t.Errorf("Shaping.ProfilePath = %q, want %q", cfg.Shaping.ProfilePath, "profiles/chrome_browsing.json")
+	}
+	if cfg.TLS.CacheDir != "/var/lib/ghost/certs" {
+		t.Errorf("TLS.CacheDir = %q, want %q", cfg.TLS.CacheDir, "/var/lib/ghost/certs")
+	}
+	if cfg.Fallback.Addr != "127.0.0.1:8080" {
+		t.Errorf("Fallback.Addr = %q, want %q", cfg.Fallback.Addr, "127.0.0.1:8080")
+	}
+	if cfg.Log.Level != "info" {
+		t.Errorf("Log.Level = %q, want %q", cfg.Log.Level, "info")
+	}
+	if cfg.Log.File != "stdout" {
+		t.Errorf("Log.File = %q, want %q", cfg.Log.File, "stdout")
+	}
+}
+
+func TestServerConfig_DefaultsDoesNotOverwrite(t *testing.T) {
+	cfg := ServerConfig{
+		Listen:   ":8443",
+		Sessions: SessionConfig{MaxSessions: 5, IdleTimeoutSec: 60},
+		Shaping:  ShapingConfig{DefaultMode: "stealth", ProfilePath: "/custom/profile.json"},
+		TLS:      TLSConfig{CacheDir: "/custom/certs"},
+		Fallback: FallbackConfig{Addr: "10.0.0.1:80"},
+		Log:      LogConfig{Level: "debug", File: "/var/log/ghost.log"},
+	}
+	cfg.Defaults()
+
+	if cfg.Listen != ":8443" {
+		t.Errorf("Listen was overwritten: %q", cfg.Listen)
+	}
+	if cfg.Sessions.MaxSessions != 5 {
+		t.Errorf("Sessions.MaxSessions was overwritten: %d", cfg.Sessions.MaxSessions)
+	}
+	if cfg.Shaping.ProfilePath != "/custom/profile.json" {
+		t.Errorf("Shaping.ProfilePath was overwritten: %q", cfg.Shaping.ProfilePath)
+	}
+}
+
+func TestClientConfig_Defaults(t *testing.T) {
+	var cfg ClientConfig
+	cfg.Defaults()
+
+	if cfg.Shaping.DefaultMode != "balanced" {
+		t.Errorf("Shaping.DefaultMode = %q, want %q", cfg.Shaping.DefaultMode, "balanced")
+	}
+	if cfg.Shaping.ProfilePath != "profiles/chrome_browsing.json" {
+		t.Errorf("Shaping.ProfilePath = %q, want %q", cfg.Shaping.ProfilePath, "profiles/chrome_browsing.json")
+	}
+	if cfg.Proxy.Mode != "socks5" {
+		t.Errorf("Proxy.Mode = %q, want %q", cfg.Proxy.Mode, "socks5")
+	}
+	if cfg.Proxy.Socks5 != "127.0.0.1:1080" {
+		t.Errorf("Proxy.Socks5 = %q, want %q", cfg.Proxy.Socks5, "127.0.0.1:1080")
+	}
+	if cfg.Log.Level != "info" {
+		t.Errorf("Log.Level = %q, want %q", cfg.Log.Level, "info")
+	}
+	if cfg.Log.File != "stdout" {
+		t.Errorf("Log.File = %q, want %q", cfg.Log.File, "stdout")
+	}
+}
+
+func TestTLSConfig_ParsesFromYAML(t *testing.T) {
+	yamlData := `
+listen: ":443"
+domain: "example.com"
+tls:
+  cert_file: "/etc/ghost/cert.pem"
+  key_file: "/etc/ghost/key.pem"
+  auto_cert: true
+  email: "admin@example.com"
+  cache_dir: "/var/lib/ghost/certs"
+auth:
+  server_public_key: "abc"
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "server.yaml")
+	if err := os.WriteFile(path, []byte(yamlData), 0600); err != nil {
+		t.Fatalf("failed to write temp file: %v", err)
+	}
+
+	var cfg ServerConfig
+	if err := Load(path, &cfg); err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+
+	if cfg.TLS.CertFile != "/etc/ghost/cert.pem" {
+		t.Errorf("TLS.CertFile = %q, want %q", cfg.TLS.CertFile, "/etc/ghost/cert.pem")
+	}
+	if cfg.TLS.KeyFile != "/etc/ghost/key.pem" {
+		t.Errorf("TLS.KeyFile = %q, want %q", cfg.TLS.KeyFile, "/etc/ghost/key.pem")
+	}
+	if !cfg.TLS.AutoCert {
+		t.Error("TLS.AutoCert = false, want true")
+	}
+	if cfg.TLS.Email != "admin@example.com" {
+		t.Errorf("TLS.Email = %q, want %q", cfg.TLS.Email, "admin@example.com")
+	}
+	if cfg.TLS.CacheDir != "/var/lib/ghost/certs" {
+		t.Errorf("TLS.CacheDir = %q, want %q", cfg.TLS.CacheDir, "/var/lib/ghost/certs")
+	}
+}
+
+func TestShapingConfig_ProfilePathParsesFromYAML(t *testing.T) {
+	yamlData := `
+server:
+  addr: "example.com:443"
+  sni: "example.com"
+auth:
+  server_public_key: "abc"
+shaping:
+  default_mode: "stealth"
+  profile_path: "profiles/custom.json"
+  profile_dir: "profiles/"
+  auto_mode: true
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "client.yaml")
+	if err := os.WriteFile(path, []byte(yamlData), 0600); err != nil {
+		t.Fatalf("failed to write temp file: %v", err)
+	}
+
+	var cfg ClientConfig
+	if err := Load(path, &cfg); err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+
+	if cfg.Shaping.ProfilePath != "profiles/custom.json" {
+		t.Errorf("Shaping.ProfilePath = %q, want %q", cfg.Shaping.ProfilePath, "profiles/custom.json")
+	}
+	if cfg.Shaping.ProfileDir != "profiles/" {
+		t.Errorf("Shaping.ProfileDir = %q, want %q", cfg.Shaping.ProfileDir, "profiles/")
+	}
+}

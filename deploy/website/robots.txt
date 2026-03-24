@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://397841.vm.spacecore.network/sitemap.xml
