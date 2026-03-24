@@ -187,6 +187,9 @@ func TestServerConfig_Defaults(t *testing.T) {
 	if cfg.Log.File != "stdout" {
 		t.Errorf("Log.File = %q, want %q", cfg.Log.File, "stdout")
 	}
+	if cfg.Log.Format != "json" {
+		t.Errorf("Log.Format = %q, want %q", cfg.Log.Format, "json")
+	}
 }
 
 func TestServerConfig_DefaultsDoesNotOverwrite(t *testing.T) {
@@ -196,7 +199,7 @@ func TestServerConfig_DefaultsDoesNotOverwrite(t *testing.T) {
 		Shaping:  ShapingConfig{DefaultMode: "stealth", ProfilePath: "/custom/profile.json"},
 		TLS:      TLSConfig{CacheDir: "/custom/certs"},
 		Fallback: FallbackConfig{Addr: "10.0.0.1:80"},
-		Log:      LogConfig{Level: "debug", File: "/var/log/ghost.log"},
+		Log:      LogConfig{Level: "debug", Format: "text", File: "/var/log/ghost.log"},
 	}
 	cfg.Defaults()
 
@@ -208,6 +211,9 @@ func TestServerConfig_DefaultsDoesNotOverwrite(t *testing.T) {
 	}
 	if cfg.Shaping.ProfilePath != "/custom/profile.json" {
 		t.Errorf("Shaping.ProfilePath was overwritten: %q", cfg.Shaping.ProfilePath)
+	}
+	if cfg.Log.Format != "text" {
+		t.Errorf("Log.Format was overwritten: %q", cfg.Log.Format)
 	}
 }
 
@@ -232,6 +238,9 @@ func TestClientConfig_Defaults(t *testing.T) {
 	}
 	if cfg.Log.File != "stdout" {
 		t.Errorf("Log.File = %q, want %q", cfg.Log.File, "stdout")
+	}
+	if cfg.Log.Format != "text" {
+		t.Errorf("Log.Format = %q, want %q", cfg.Log.Format, "text")
 	}
 }
 

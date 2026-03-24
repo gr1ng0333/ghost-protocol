@@ -575,7 +575,7 @@ func (s *ghostServer) handleGhost(ctx context.Context, conn *peekConn, chi *clie
 		return
 	}
 
-	slog.Info("ghost: session established", "remote", conn.RemoteAddr(), "session", sessionID)
+	slog.Info("ghost: session established", "remote", conn.RemoteAddr(), "session", truncID(sessionID))
 
 	defer func() {
 		if s.sessionMgr != nil {

@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"log/slog"
 	"net/http"
 	"os"
@@ -43,11 +44,18 @@ func NewCertManager(domain string, autoCert bool, email, cacheDir, certFile, key
 		return newAutoCertManager(domain, email, cacheDir, log), nil
 	}
 
+	var cm *CertManager
+	var err error
 	if certFile != "" && keyFile != "" {
-		return newManualCertManager(domain, certFile, keyFile, log)
+		cm, err = newManualCertManager(domain, certFile, keyFile, log)
+	} else {
+		cm, err = newSelfSignedCertManager(domain, log)
 	}
-
-	return newSelfSignedCertManager(domain, log)
+	if err != nil {
+		return nil, err
+	}
+	cm.LogCertExpiry()
+	return cm, nil
 }
 
 func newAutoCertManager(domain, email, cacheDir string, log *slog.Logger) *CertManager {
@@ -178,6 +186,46 @@ func (cm *CertManager) watchLoop(ctx context.Context) {
 				}
 			}
 		}
+	}
+}
+
+// LogCertExpiry logs the certificate expiry date. It logs at WARN
+// level if the cert expires within 14 days, ERROR if within 3 days,
+// and INFO otherwise.
+func (cm *CertManager) LogCertExpiry() {
+	cm.mu.RLock()
+	cert := cm.cert
+	cm.mu.RUnlock()
+
+	if cert == nil {
+		cm.log.Warn("no certificate loaded")
+		return
+	}
+
+	leaf := cert.Leaf
+	if leaf == nil && len(cert.Certificate) > 0 {
+		parsed, err := x509.ParseCertificate(cert.Certificate[0])
+		if err != nil {
+			cm.log.Warn("certmgr: failed to parse certificate", "err", err)
+			return
+		}
+		leaf = parsed
+	}
+
+	if leaf == nil {
+		cm.log.Warn("no certificate loaded")
+		return
+	}
+
+	remaining := time.Until(leaf.NotAfter)
+	days := int(remaining.Hours() / 24)
+
+	if remaining < 3*24*time.Hour {
+		cm.log.Error("certificate expiring soon", "expires", leaf.NotAfter, "days_remaining", days)
+	} else if remaining < 14*24*time.Hour {
+		cm.log.Warn("certificate expiring", "expires", leaf.NotAfter, "days_remaining", days)
+	} else {
+		cm.log.Info("certificate loaded", "expires", leaf.NotAfter, "days_remaining", days)
 	}
 }
 

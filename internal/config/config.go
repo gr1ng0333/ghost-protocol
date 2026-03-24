@@ -88,8 +88,9 @@ type TLSConfig struct {
 
 // LogConfig configures logging.
 type LogConfig struct {
-	Level string `yaml:"level"`
-	File  string `yaml:"file"`
+	Level  string `yaml:"level"`  // "debug", "info", "warn", "error"
+	Format string `yaml:"format"` // "json" or "text" (default: "json" server, "text" client)
+	File   string `yaml:"file"`   // path, or "stdout"/"stderr"
 }
 
 // Defaults fills zero-value fields with sensible defaults.
@@ -118,6 +119,9 @@ func (c *ServerConfig) Defaults() {
 	if c.Log.Level == "" {
 		c.Log.Level = "info"
 	}
+	if c.Log.Format == "" {
+		c.Log.Format = "json"
+	}
 	if c.Log.File == "" {
 		c.Log.File = "stdout"
 	}
@@ -139,6 +143,9 @@ func (c *ClientConfig) Defaults() {
 	}
 	if c.Log.Level == "" {
 		c.Log.Level = "info"
+	}
+	if c.Log.Format == "" {
+		c.Log.Format = "text"
 	}
 	if c.Log.File == "" {
 		c.Log.File = "stdout"

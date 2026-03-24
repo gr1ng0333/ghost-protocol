@@ -3,11 +3,14 @@ package main
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -31,6 +34,7 @@ func main() {
 		os.Exit(1)
 	}
 	cfg.Defaults()
+	initLogging(cfg.Log)
 
 	// Create certificate manager.
 	domain := cfg.Domain
@@ -82,6 +86,11 @@ func main() {
 	idleTimeout := time.Duration(cfg.Sessions.IdleTimeoutSec) * time.Second
 	sm := transport.NewSessionManager(cfg.Sessions.MaxSessions, idleTimeout, slog.Default())
 
+	// Create metrics collector.
+	metrics := transport.NewMetrics()
+	sm.OnRegister = metrics.SessionOpened
+	sm.OnRemove = metrics.SessionClosed
+
 	// Create server with session management and per-session shaping.
 	srv := transport.NewServerWithSessions(&cfg, tlsConfig, sa, sm, profile, shapingMode, cfg.Shaping.AutoMode)
 
@@ -99,6 +108,71 @@ func main() {
 
 	// Start cert file watcher (manual mode only).
 	certMgr.StartFileWatcher(ctx)
+
+	// Health endpoint — localhost only.
+	healthMux := http.NewServeMux()
+	healthMux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		snap := metrics.Snapshot()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"healthy":        true,
+			"sessions":       snap.ActiveSessions,
+			"total_sessions": snap.TotalSessions,
+			"uptime_seconds": time.Since(snap.Uptime).Seconds(),
+			"bytes_sent":     snap.TotalBytesSent,
+			"bytes_recv":     snap.TotalBytesRecv,
+			"reconnects":     snap.ReconnectCount,
+		})
+	})
+	go func() {
+		if err := http.ListenAndServe("127.0.0.1:9090", healthMux); err != nil {
+			slog.Error("health endpoint failed", "err", err)
+		}
+	}()
+	slog.Info("health endpoint started", "addr", "127.0.0.1:9090")
+
+	// Notify systemd that startup is complete (Type=notify).
+	if err := sdNotify("READY=1"); err != nil {
+		slog.Warn("sd_notify READY failed", "err", err)
+	}
+
+	// Systemd watchdog: ping every 60s (WatchdogSec=120 in service file).
+	go func() {
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := sdNotify("WATCHDOG=1"); err != nil {
+					slog.Warn("watchdog notify failed", "err", err)
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	// Periodic metrics logging.
+	go func() {
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				snap := metrics.Snapshot()
+				slog.Info("metrics",
+					"sessions", snap.ActiveSessions,
+					"total_sessions", snap.TotalSessions,
+					"bytes_sent", snap.TotalBytesSent,
+					"bytes_recv", snap.TotalBytesRecv,
+					"uptime", time.Since(snap.Uptime).String(),
+					"reconnects", snap.ReconnectCount,
+				)
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 
 	// Start HTTP-01 challenge handler on :80 (autocert mode only).
 	if h := certMgr.HTTPHandler(); h != nil {
@@ -171,4 +245,54 @@ func buildServerAuth(ac config.AuthConfig) (auth.ServerAuth, error) {
 	}
 
 	return auth.NewServerAuth(serverPriv, clientPubs)
+}
+
+// initLogging configures the default slog logger from LogConfig.
+func initLogging(cfg config.LogConfig) {
+	var level slog.Level
+	switch strings.ToLower(cfg.Level) {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	default:
+		level = slog.LevelInfo
+	}
+	opts := &slog.HandlerOptions{Level: level}
+
+	out := os.Stdout
+	if cfg.File != "" && cfg.File != "stdout" {
+		f, err := os.OpenFile(cfg.File, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+		if err != nil {
+			slog.Error("failed to open log file, using stdout", "file", cfg.File, "err", err)
+		} else {
+			out = f
+		}
+	}
+
+	var handler slog.Handler
+	if strings.ToLower(cfg.Format) == "text" {
+		handler = slog.NewTextHandler(out, opts)
+	} else {
+		handler = slog.NewJSONHandler(out, opts)
+	}
+	slog.SetDefault(slog.New(handler))
+}
+
+// sdNotify sends a notification to systemd via the sd_notify protocol.
+// Does nothing if NOTIFY_SOCKET is not set (i.e., not running under systemd).
+func sdNotify(state string) error {
+	sock := os.Getenv("NOTIFY_SOCKET")
+	if sock == "" {
+		return nil
+	}
+	conn, err := net.Dial("unixgram", sock)
+	if err != nil {
+		return fmt.Errorf("sdNotify dial: %w", err)
+	}
+	defer conn.Close()
+	_, err = conn.Write([]byte(state))
+	return err
 }

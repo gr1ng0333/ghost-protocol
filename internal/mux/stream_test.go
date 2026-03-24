@@ -10,7 +10,7 @@ import (
 
 // TestStream_ReadWrite writes data via pushData and reads it back via Read.
 func TestStream_ReadWrite(t *testing.T) {
-	s := newStream(1, nil, func() {})
+	s := newStream(1, nil, func() {}, nil)
 
 	data := []byte("hello, ghost")
 	s.pushData(data)
@@ -27,7 +27,7 @@ func TestStream_ReadWrite(t *testing.T) {
 
 // TestStream_ReadMultipleChunks pushes 3 chunks and reads all sequentially.
 func TestStream_ReadMultipleChunks(t *testing.T) {
-	s := newStream(2, nil, func() {})
+	s := newStream(2, nil, func() {}, nil)
 
 	chunks := []string{"alpha", "bravo", "charlie"}
 	for _, c := range chunks {
@@ -49,7 +49,7 @@ func TestStream_ReadMultipleChunks(t *testing.T) {
 // TestStream_ReadPartial pushes a large chunk and reads with a small buffer,
 // verifying leftover handling.
 func TestStream_ReadPartial(t *testing.T) {
-	s := newStream(3, nil, func() {})
+	s := newStream(3, nil, func() {}, nil)
 
 	data := []byte("abcdefghijklmnop") // 16 bytes
 	s.pushData(data)
@@ -99,7 +99,7 @@ func TestStream_WriteChunking(t *testing.T) {
 		return nil
 	}
 
-	s := newStream(4, writeFn, func() {})
+	s := newStream(4, writeFn, func() {}, nil)
 
 	// Write 2.5x MaxPayloadSize bytes.
 	size := framing.MaxPayloadSize*2 + framing.MaxPayloadSize/2
@@ -151,7 +151,7 @@ func TestStream_WriteAfterClose(t *testing.T) {
 		return nil
 	}, func() {
 		closeCalled = true
-	})
+	}, nil)
 
 	if err := s.Close(); err != nil {
 		t.Fatalf("unexpected error on Close: %v", err)
@@ -169,7 +169,7 @@ func TestStream_WriteAfterClose(t *testing.T) {
 // TestStream_ReadAfterRemoteClose pushes data, then calls closeRead(),
 // and verifies Read returns the data then io.EOF.
 func TestStream_ReadAfterRemoteClose(t *testing.T) {
-	s := newStream(6, nil, func() {})
+	s := newStream(6, nil, func() {}, nil)
 
 	s.pushData([]byte("before-close"))
 	s.closeRead()
@@ -196,7 +196,7 @@ func TestStream_CloseIdempotent(t *testing.T) {
 	callCount := 0
 	s := newStream(7, nil, func() {
 		callCount++
-	})
+	}, nil)
 
 	if err := s.Close(); err != nil {
 		t.Fatalf("first Close: %v", err)
@@ -212,8 +212,137 @@ func TestStream_CloseIdempotent(t *testing.T) {
 
 // TestStream_ID verifies ID() returns the correct stream ID.
 func TestStream_ID(t *testing.T) {
-	s := newStream(42, nil, func() {})
+	s := newStream(42, nil, func() {}, nil)
 	if s.ID() != 42 {
 		t.Fatalf("got ID %d, want 42", s.ID())
+	}
+}
+
+// TestStream_CloseWrite verifies that after CloseWrite, Write returns
+// ErrStreamClosed but Read still works for already-buffered data.
+func TestStream_CloseWrite(t *testing.T) {
+	closeWriteCalled := false
+	closeWriteFn := func() error {
+		closeWriteCalled = true
+		return nil
+	}
+
+	s := newStream(10, func(data []byte) error {
+		return nil
+	}, func() {}, closeWriteFn)
+
+	// Push data before CloseWrite so readBuf has something.
+	s.pushData([]byte("still readable"))
+
+	if err := s.CloseWrite(); err != nil {
+		t.Fatalf("CloseWrite: %v", err)
+	}
+	if !closeWriteCalled {
+		t.Fatal("closeWriteFn was not called")
+	}
+
+	// Write must fail after CloseWrite.
+	_, err := s.Write([]byte("should fail"))
+	if err != ErrStreamClosed {
+		t.Fatalf("Write after CloseWrite: got %v, want ErrStreamClosed", err)
+	}
+
+	// Read must still work for buffered data.
+	buf := make([]byte, 64)
+	n, err := s.Read(buf)
+	if err != nil {
+		t.Fatalf("Read after CloseWrite: unexpected error: %v", err)
+	}
+	if string(buf[:n]) != "still readable" {
+		t.Fatalf("Read after CloseWrite: got %q, want %q", string(buf[:n]), "still readable")
+	}
+
+	// pushData still works (read direction is open).
+	s.pushData([]byte("post-closewrite"))
+	n, err = s.Read(buf)
+	if err != nil {
+		t.Fatalf("Read after pushData post-CloseWrite: %v", err)
+	}
+	if string(buf[:n]) != "post-closewrite" {
+		t.Fatalf("got %q, want %q", string(buf[:n]), "post-closewrite")
+	}
+}
+
+// TestStream_CloseWrite_Idempotent verifies calling CloseWrite twice
+// doesn't panic and the callback is invoked only once.
+func TestStream_CloseWrite_Idempotent(t *testing.T) {
+	callCount := 0
+	closeWriteFn := func() error {
+		callCount++
+		return nil
+	}
+
+	s := newStream(11, nil, func() {}, closeWriteFn)
+
+	if err := s.CloseWrite(); err != nil {
+		t.Fatalf("first CloseWrite: %v", err)
+	}
+	if err := s.CloseWrite(); err != nil {
+		t.Fatalf("second CloseWrite: %v", err)
+	}
+
+	if callCount != 1 {
+		t.Fatalf("closeWriteFn called %d times, want 1", callCount)
+	}
+}
+
+// TestStream_CloseWrite_ThenClose verifies CloseWrite followed by Close
+// works correctly: both complete without panic, closeFn is called by Close.
+func TestStream_CloseWrite_ThenClose(t *testing.T) {
+	closeFnCalled := false
+	closeWriteFnCalled := false
+
+	s := newStream(12, func(data []byte) error {
+		return nil
+	}, func() {
+		closeFnCalled = true
+	}, func() error {
+		closeWriteFnCalled = true
+		return nil
+	})
+
+	s.pushData([]byte("data"))
+
+	// CloseWrite first.
+	if err := s.CloseWrite(); err != nil {
+		t.Fatalf("CloseWrite: %v", err)
+	}
+	if !closeWriteFnCalled {
+		t.Fatal("closeWriteFn was not called")
+	}
+
+	// Write must fail.
+	_, err := s.Write([]byte("nope"))
+	if err != ErrStreamClosed {
+		t.Fatalf("Write after CloseWrite: got %v, want ErrStreamClosed", err)
+	}
+
+	// Read buffered data still works.
+	buf := make([]byte, 64)
+	n, err := s.Read(buf)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if string(buf[:n]) != "data" {
+		t.Fatalf("got %q, want %q", string(buf[:n]), "data")
+	}
+
+	// Full close.
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if !closeFnCalled {
+		t.Fatal("closeFn was not called after Close")
+	}
+
+	// Read returns EOF after full close.
+	_, err = s.Read(buf)
+	if err != io.EOF {
+		t.Fatalf("Read after Close: got %v, want io.EOF", err)
 	}
 }

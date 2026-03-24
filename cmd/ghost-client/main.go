@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -33,7 +34,7 @@ func main() {
 	cfg.Defaults()
 
 	// Setup logging.
-	setupLog(cfg.Log)
+	initLogging(cfg.Log)
 
 	// Parse auth keys from hex.
 	serverPub, err := decodeKey(cfg.Auth.ServerPublicKey, "server_public_key")
@@ -249,10 +250,10 @@ func (a *muxStatsAdapter) TotalBytesRecv() uint64 { return a.getMuxStats().Bytes
 
 func (e *strError) Error() string { return e.s }
 
-// setupLog configures slog based on LogConfig.
-func setupLog(lc config.LogConfig) {
+// initLogging configures the default slog logger from LogConfig.
+func initLogging(cfg config.LogConfig) {
 	var level slog.Level
-	switch lc.Level {
+	switch strings.ToLower(cfg.Level) {
 	case "debug":
 		level = slog.LevelDebug
 	case "warn":
@@ -264,17 +265,21 @@ func setupLog(lc config.LogConfig) {
 	}
 	opts := &slog.HandlerOptions{Level: level}
 
-	var handler slog.Handler
-	if lc.File != "" && lc.File != "stdout" {
-		f, err := os.OpenFile(lc.File, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	out := os.Stdout
+	if cfg.File != "" && cfg.File != "stdout" {
+		f, err := os.OpenFile(cfg.File, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 		if err != nil {
-			slog.Error("failed to open log file, using stdout", "file", lc.File, "err", err)
-			handler = slog.NewTextHandler(os.Stdout, opts)
+			slog.Error("failed to open log file, using stdout", "file", cfg.File, "err", err)
 		} else {
-			handler = slog.NewTextHandler(f, opts)
+			out = f
 		}
+	}
+
+	var handler slog.Handler
+	if strings.ToLower(cfg.Format) == "text" {
+		handler = slog.NewTextHandler(out, opts)
 	} else {
-		handler = slog.NewTextHandler(os.Stdout, opts)
+		handler = slog.NewJSONHandler(out, opts)
 	}
 	slog.SetDefault(slog.New(handler))
 }

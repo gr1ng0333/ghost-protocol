@@ -95,7 +95,7 @@ func (m *clientMux) Open(ctx context.Context, addr string, port uint16) (Stream,
 		return nil, fmt.Errorf("mux.ClientMux.Open: %w", err)
 	}
 
-	s := newStream(streamID, m.makeWriteFn(streamID), m.makeCloseFn(streamID))
+	s := newStream(streamID, m.makeWriteFn(streamID), m.makeCloseFn(streamID), m.makeCloseWriteFn(streamID))
 
 	m.mu.Lock()
 	m.streams[streamID] = s
@@ -230,5 +230,16 @@ func (m *clientMux) makeCloseFn(streamID uint32) func() {
 			m.stats.TotalClosed++
 		}
 		m.mu.Unlock()
+	}
+}
+
+// makeCloseWriteFn returns a callback that sends a FrameClose for
+// half-close semantics without removing the stream from the map.
+func (m *clientMux) makeCloseWriteFn(streamID uint32) func() error {
+	return func() error {
+		return m.sendFrame(&framing.Frame{
+			Type:     framing.FrameClose,
+			StreamID: streamID,
+		})
 	}
 }

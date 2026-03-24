@@ -105,20 +105,46 @@ func (s *socks5Server) Close() error {
 	return nil
 }
 
+// halfCloser is implemented by connections that support closing the
+// write direction independently (e.g. *net.TCPConn, mux *stream).
+type halfCloser interface {
+	CloseWrite() error
+}
+
 // relay performs bidirectional data copy between two ReadWriteClosers.
-// When either side closes or errors, both sides are closed.
+// It uses half-close when supported: when one direction reaches EOF,
+// the write side of the other connection is closed while the reverse
+// direction continues. Full cleanup happens when both directions finish.
 func relay(a, b io.ReadWriteCloser) {
 	done := make(chan struct{}, 2)
+
+	// a ← b: read from b, write to a.
 	go func() {
 		io.Copy(a, b)
+		// b sent EOF — signal a that no more data is coming.
+		if hc, ok := a.(halfCloser); ok {
+			hc.CloseWrite()
+		} else {
+			a.Close()
+		}
 		done <- struct{}{}
 	}()
+
+	// b ← a: read from a, write to b.
 	go func() {
 		io.Copy(b, a)
+		// a sent EOF — signal b that no more data is coming.
+		if hc, ok := b.(halfCloser); ok {
+			hc.CloseWrite()
+		} else {
+			b.Close()
+		}
 		done <- struct{}{}
 	}()
+
+	// Wait for both directions to finish, then full-close both sides.
+	<-done
 	<-done
 	a.Close()
 	b.Close()
-	<-done
 }

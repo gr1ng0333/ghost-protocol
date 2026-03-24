@@ -14,6 +14,14 @@ import (
 // sessions has been reached.
 var ErrMaxSessions = errors.New("maximum sessions reached")
 
+// truncID returns at most the first 8 characters of a session ID.
+func truncID(id string) string {
+	if len(id) <= 8 {
+		return id
+	}
+	return id[:8]
+}
+
 // SessionManager tracks active authenticated client sessions.
 type SessionManager struct {
 	mu          sync.RWMutex
@@ -21,6 +29,8 @@ type SessionManager struct {
 	maxSessions int
 	idleTimeout time.Duration
 	log         *slog.Logger
+	OnRegister  func() // called after a session is registered
+	OnRemove    func() // called after a session is removed
 }
 
 type managedSession struct {
@@ -69,10 +79,13 @@ func (sm *SessionManager) Register(id string, addr net.Addr, pipeline interface{
 	}
 
 	sm.log.Info("session registered",
-		"session_id", id,
-		"remote_addr", addr,
+		"session", truncID(id),
+		"addr", addr,
 		"total_count", len(sm.sessions),
 	)
+	if sm.OnRegister != nil {
+		sm.OnRegister()
+	}
 	return nil
 }
 
@@ -98,7 +111,7 @@ func (sm *SessionManager) Touch(id string) {
 
 	if s, ok := sm.sessions[id]; ok {
 		s.lastActive = time.Now()
-		sm.log.Debug("session touched", "session_id", id)
+		sm.log.Debug("session touched", "session", truncID(id))
 	}
 }
 
@@ -173,13 +186,16 @@ func (sm *SessionManager) teardown(s *managedSession, reason string) {
 	if s.pipeline != nil {
 		if err := s.pipeline.Close(); err != nil {
 			sm.log.Warn("session pipeline close error",
-				"session_id", s.id,
+				"session", truncID(s.id),
 				"err", err,
 			)
 		}
 	}
 	sm.log.Info("session removed",
-		"session_id", s.id,
+		"session", truncID(s.id),
 		"reason", reason,
 	)
+	if sm.OnRemove != nil {
+		sm.OnRemove()
+	}
 }

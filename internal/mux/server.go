@@ -126,7 +126,7 @@ func (m *serverMux) readLoop() {
 			dest := Destination{Addr: op.Addr, Port: op.Port}
 			sid := frame.StreamID
 
-			s := newStream(sid, m.makeWriteFn(sid), m.makeCloseFn(sid))
+			s := newStream(sid, m.makeWriteFn(sid), m.makeCloseFn(sid), m.makeCloseWriteFn(sid))
 
 			m.mu.Lock()
 			m.streams[sid] = s
@@ -186,5 +186,16 @@ func (m *serverMux) makeCloseFn(streamID uint32) func() {
 		m.mu.Lock()
 		delete(m.streams, streamID)
 		m.mu.Unlock()
+	}
+}
+
+// makeCloseWriteFn returns a callback that sends a FrameClose for
+// half-close semantics without removing the stream from the map.
+func (m *serverMux) makeCloseWriteFn(streamID uint32) func() error {
+	return func() error {
+		return m.sendFrame(&framing.Frame{
+			Type:     framing.FrameClose,
+			StreamID: streamID,
+		})
 	}
 }
