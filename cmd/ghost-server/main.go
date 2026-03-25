@@ -130,18 +130,26 @@ func main() {
 		}
 
 		// Check cert expiry if CertManager is available.
-		if cert, err := certMgr.GetCertificate(nil); err == nil && cert != nil {
-			leaf := cert.Leaf
-			if leaf == nil && len(cert.Certificate) > 0 {
-				if parsed, perr := x509.ParseCertificate(cert.Certificate[0]); perr == nil {
-					leaf = parsed
+		// Wrapped in recover() because autocert.Manager.GetCertificate panics on nil hello.
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Warn("cert expiry check skipped (panic recovered)", "err", r)
+				}
+			}()
+			if cert, err := certMgr.GetCertificate(nil); err == nil && cert != nil {
+				leaf := cert.Leaf
+				if leaf == nil && len(cert.Certificate) > 0 {
+					if parsed, perr := x509.ParseCertificate(cert.Certificate[0]); perr == nil {
+						leaf = parsed
+					}
+				}
+				if leaf != nil && time.Until(leaf.NotAfter) < 24*time.Hour {
+					healthy = false
+					reasons = append(reasons, "cert expires within 24h")
 				}
 			}
-			if leaf != nil && time.Until(leaf.NotAfter) < 24*time.Hour {
-				healthy = false
-				reasons = append(reasons, "cert expires within 24h")
-			}
-		}
+		}()
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
