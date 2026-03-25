@@ -14,6 +14,7 @@ import (
 const (
 	ghostTable        = "100" // dedicated routing table for Ghost
 	prefServer        = "100" // ip rule priority: Ghost server bypass
+	prefIPv6Block     = "100" // ip -6 rule priority: block all IPv6
 	prefLAN           = "110" // ip rule priority: LAN bypass
 	prefMainNoDefault = "120" // ip rule priority: main table without default
 	prefGhost         = "130" // ip rule priority: Ghost tunnel table
@@ -50,9 +51,21 @@ func SetupRouting(tunName, tunIP, serverAddr string) error {
 		return fmt.Errorf("routing already configured")
 	}
 
-	// Validate serverAddr is an IP (not hostname)
-	if net.ParseIP(serverAddr) == nil {
-		return fmt.Errorf("SetupRouting: serverAddr must be an IP, got %q", serverAddr)
+	// Extract host from server address (strip port if present)
+	host, _, err := net.SplitHostPort(serverAddr)
+	if err != nil {
+		// No port in address, use as-is
+		host = serverAddr
+	}
+
+	// Resolve hostname to IP if needed
+	serverIP := host
+	if net.ParseIP(host) == nil {
+		ips, lookupErr := net.LookupHost(host)
+		if lookupErr != nil {
+			return fmt.Errorf("SetupRouting: resolve server %q: %w", host, lookupErr)
+		}
+		serverIP = ips[0]
 	}
 
 	// Detect current default gateway (needed for server bypass route)
@@ -64,7 +77,7 @@ func SetupRouting(tunName, tunIP, serverAddr string) error {
 	routing.origGW = gw
 	routing.origDev = dev
 	routing.tunName = tunName
-	routing.serverAddr = serverAddr
+	routing.serverAddr = serverIP
 
 	// Configure TUN interface IP and bring it up
 	if err := run("ip", "addr", "add", tunIP+"/24", "dev", tunName); err != nil {
@@ -81,7 +94,7 @@ func SetupRouting(tunName, tunIP, serverAddr string) error {
 
 	// Rule: Ghost server IP → lookup main (bypass TUN)
 	if err := run("ip", "-4", "rule", "add", "pref", prefServer,
-		"to", serverAddr+"/32", "lookup", "main"); err != nil {
+		"to", serverIP+"/32", "lookup", "main"); err != nil {
 		return fmt.Errorf("SetupRouting: server rule: %w", err)
 	}
 
@@ -112,6 +125,11 @@ func SetupRouting(tunName, tunIP, serverAddr string) error {
 		return fmt.Errorf("SetupRouting: ghost rule: %w", err)
 	}
 
+	// Block IPv6 traffic to prevent leaks (Ghost tunnel is IPv4-only)
+	if err := run("ip", "-6", "rule", "add", "pref", prefIPv6Block, "prohibit"); err != nil {
+		return fmt.Errorf("SetupRouting: ipv6 block rule: %w", err)
+	}
+
 	// Set up DNS through tunnel
 	if err := setupDNS(tunName); err != nil {
 		slog.Warn("SetupRouting: DNS setup failed (non-fatal)", "error", err)
@@ -121,7 +139,7 @@ func SetupRouting(tunName, tunIP, serverAddr string) error {
 
 	slog.Info("routing configured",
 		"tun", tunName,
-		"server_bypass", serverAddr,
+		"server_bypass", serverIP,
 		"gateway", gw,
 		"device", dev,
 	)
@@ -150,6 +168,9 @@ func RestoreRouting() {
 			}
 		}
 	}
+
+	// Remove IPv6 block rule
+	_ = run("ip", "-6", "rule", "del", "pref", prefIPv6Block, "prohibit")
 
 	// Flush Ghost routing table
 	_ = run("ip", "-4", "route", "flush", "table", ghostTable)

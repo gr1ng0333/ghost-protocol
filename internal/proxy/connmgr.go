@@ -50,8 +50,9 @@ type ConnManager struct {
 	pipelineCleanup func()
 	healthy         bool
 
-	backoff     *ExponentialBackoff
-	reconnectCh chan struct{}
+	backoff       *ExponentialBackoff
+	reconnectCh   chan struct{}
+	healthResetCh chan struct{}
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -74,18 +75,39 @@ func NewConnManager(cfg ConnManagerConfig) *ConnManager {
 			Max:        30 * time.Second,
 			Multiplier: 2.0,
 		},
-		reconnectCh: make(chan struct{}, 1),
+		reconnectCh:   make(chan struct{}, 1),
+		healthResetCh: make(chan struct{}, 1),
 	}
 }
 
 // Start establishes the initial connection and starts the reconnect loop.
-// If the initial connection fails, the error is returned immediately.
+// Retries up to 3 times with 2 second intervals before returning an error.
 func (cm *ConnManager) Start(ctx context.Context) error {
 	cm.ctx, cm.cancel = context.WithCancel(ctx)
 
-	if err := cm.connect(); err != nil {
+	const maxBootstrapAttempts = 3
+	var err error
+	for attempt := 1; attempt <= maxBootstrapAttempts; attempt++ {
+		if err = cm.connect(); err == nil {
+			break
+		}
+		slog.Warn("connmgr: bootstrap connect failed",
+			"attempt", attempt,
+			"max", maxBootstrapAttempts,
+			"error", err,
+		)
+		if attempt < maxBootstrapAttempts {
+			select {
+			case <-ctx.Done():
+				cm.cancel()
+				return ctx.Err()
+			case <-time.After(2 * time.Second):
+			}
+		}
+	}
+	if err != nil {
 		cm.cancel()
-		return fmt.Errorf("connmgr: initial connect: %w", err)
+		return fmt.Errorf("connmgr: initial connect (after %d attempts): %w", maxBootstrapAttempts, err)
 	}
 
 	cm.wg.Add(1)
@@ -177,6 +199,12 @@ func (cm *ConnManager) connect() error {
 	cm.pipelineCleanup = newCleanup
 	cm.healthy = true
 	cm.mu.Unlock()
+
+	// Reset health monitor state for new connection
+	select {
+	case cm.healthResetCh <- struct{}{}:
+	default:
+	}
 
 	if oldPipeline != nil {
 		oldPipeline.Close()

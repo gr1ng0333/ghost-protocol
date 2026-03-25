@@ -12,19 +12,18 @@ import (
 func TestSetupRouting_InvalidServerAddr(t *testing.T) {
 	err := SetupRouting("ghost0", "10.0.85.1", "not-an-ip")
 	if err == nil {
-		t.Fatal("expected error for invalid server address")
-	}
-	if !strings.Contains(err.Error(), "must be an IP") {
-		t.Errorf("unexpected error message: %v", err)
+		RestoreRouting()
+		t.Fatal("expected error for unresolvable server address")
 	}
 }
 
 func TestSetupRouting_InvalidServerAddr_Hostname(t *testing.T) {
-	err := SetupRouting("ghost0", "10.0.85.1", "example.com")
+	err := SetupRouting("ghost0", "10.0.85.1", "unresolvable.invalid")
 	if err == nil {
-		t.Fatal("expected error for hostname server address")
+		RestoreRouting()
+		t.Fatal("expected error for unresolvable hostname")
 	}
-	if !strings.Contains(err.Error(), "must be an IP") {
+	if !strings.Contains(err.Error(), "resolve") {
 		t.Errorf("unexpected error: %v", err)
 	}
 }

@@ -12,6 +12,7 @@ import (
 
 	"ghost/internal/auth"
 	"ghost/internal/config"
+	"ghost/internal/mux"
 
 	utls "github.com/refraction-networking/utls"
 	"golang.org/x/net/http2"
@@ -201,7 +202,7 @@ func authTestPost(t *testing.T, h2cc *http2.ClientConn, token, path string, payl
 // SessionID injection → server verification → TLS handshake →
 // ExportKeyingMaterial binding → token derivation → token validation → echo.
 func TestAuth_EndToEnd_Success(t *testing.T) {
-	ca, sa, _ := authTestEnv(t)
+	ca, sa, secret := authTestEnv(t)
 
 	_, srvAddr := startAuthServer(t, sa, "")
 
@@ -211,8 +212,9 @@ func TestAuth_EndToEnd_Success(t *testing.T) {
 	h2cc, token, cleanup := authTestConn(t, ctx, srvAddr, ca)
 	defer cleanup()
 
+	uploadPath, _ := mux.DerivePaths(secret)
 	payload := []byte("auth-e2e-test-payload-12345")
-	_ = authTestPost(t, h2cc, token, "/api/v1/sync", payload)
+	_ = authTestPost(t, h2cc, token, uploadPath, payload)
 	// POST no longer echoes — it pipes data to the mux. 200 status is validated by authTestPost.
 }
 
@@ -283,7 +285,7 @@ func TestAuth_EndToEnd_WrongKey(t *testing.T) {
 // TestAuth_EndToEnd_TokenValidation verifies that the session token
 // is valid across multiple HTTP/2 requests on the same connection.
 func TestAuth_EndToEnd_TokenValidation(t *testing.T) {
-	ca, sa, _ := authTestEnv(t)
+	ca, sa, secret := authTestEnv(t)
 
 	_, srvAddr := startAuthServer(t, sa, "")
 
@@ -293,6 +295,7 @@ func TestAuth_EndToEnd_TokenValidation(t *testing.T) {
 	h2cc, token, cleanup := authTestConn(t, ctx, srvAddr, ca)
 	defer cleanup()
 
+	uploadPath, _ := mux.DerivePaths(secret)
 	// Send 5 POSTs with different payloads — all should succeed with correct echo.
 	payloads := []string{
 		"request-alpha",
@@ -302,7 +305,7 @@ func TestAuth_EndToEnd_TokenValidation(t *testing.T) {
 		"request-epsilon",
 	}
 	for _, p := range payloads {
-		_ = authTestPost(t, h2cc, token, "/api/v1/sync", []byte(p))
+		_ = authTestPost(t, h2cc, token, uploadPath, []byte(p))
 	}
 	// POST no longer echoes — assert only that all 5 requests got 200 (authTestPost fatals on non-200).
 }
@@ -342,11 +345,17 @@ func TestAuth_EndToEnd_MultipleClients(t *testing.T) {
 			t.Fatalf("client %d: NewClientAuth: %v", i, err)
 		}
 
+		secret, err := auth.SharedSecret(clientKPs[i].Private, serverKP.Public)
+		if err != nil {
+			t.Fatalf("client %d: SharedSecret: %v", i, err)
+		}
+		uploadPath, _ := mux.DerivePaths(secret)
+
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		h2cc, token, cleanup := authTestConn(t, ctx, srvAddr, ca)
 
 		payload := []byte("multi-client-" + string(rune('A'+i)))
-		_ = authTestPost(t, h2cc, token, "/api/v1/sync", payload)
+		_ = authTestPost(t, h2cc, token, uploadPath, payload)
 		// POST no longer echoes — assert only 200 status (authTestPost fatals on non-200).
 
 		cleanup()

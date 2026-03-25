@@ -25,16 +25,19 @@ const minFrameSize = headerSize + 1
 // ProfilePadder implements the Padder interface using a traffic Profile
 // to determine padding sizes via statistical distribution sampling.
 type ProfilePadder struct {
-	profile *Profile
-	rng     *rand.Rand
+	profile   *Profile
+	rng       *rand.Rand
+	noiseProb float64 // per-session randomized noise injection probability
 }
 
 // NewProfilePadder creates a ProfilePadder with the given profile and
 // a deterministic RNG seeded with seed.
 func NewProfilePadder(profile *Profile, seed int64) *ProfilePadder {
+	rng := rand.New(rand.NewSource(seed))
 	return &ProfilePadder{
-		profile: profile,
-		rng:     rand.New(rand.NewSource(seed)),
+		profile:   profile,
+		rng:       rng,
+		noiseProb: 0.05 + rng.Float64()*0.10, // randomize between 5% and 15%
 	}
 }
 
@@ -52,7 +55,7 @@ func (p *ProfilePadder) Pad(f *framing.Frame) []*framing.Frame {
 	}
 
 	// Possibly inject a noise padding frame before the data frame.
-	if p.hasBurstConf() && p.rng.Float64() < 0.1 {
+	if p.hasBurstConf() && p.rng.Float64() < p.noiseProb {
 		noiseSize := p.sampleSize()
 		noisePadLen := noiseSize - headerSize
 		if noisePadLen < 0 {

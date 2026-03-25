@@ -349,7 +349,7 @@ func TestGhostHandler_PostReadError(t *testing.T) {
 	handler, token, upR, _ := testHandlerSetup(t)
 	defer upR.Close()
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/sync", errReader{})
+	req := httptest.NewRequest(http.MethodPost, "/api/upload", errReader{})
 	req.Header.Set("X-Session-Token", token)
 
 	rr := httptest.NewRecorder()
@@ -364,14 +364,14 @@ func TestGhostHandler_PostReadError(t *testing.T) {
 func TestGhostHandler_UnsupportedMethod(t *testing.T) {
 	handler, token, _, _ := testHandlerSetup(t)
 
-	req := httptest.NewRequest(http.MethodPut, "/api/v1/sync", nil)
+	req := httptest.NewRequest(http.MethodPut, "/api/upload", nil)
 	req.Header.Set("X-Session-Token", token)
 
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusMethodNotAllowed {
-		t.Errorf("status = %d, want %d", rr.Code, http.StatusMethodNotAllowed)
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want %d", rr.Code, http.StatusNotFound)
 	}
 }
 

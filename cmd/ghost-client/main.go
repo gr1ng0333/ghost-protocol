@@ -191,7 +191,7 @@ func main() {
 			tunName = "ghost0"
 		}
 
-		tunDev := newTunDevice(tunName, "10.0.85.1", serverHost)
+		tunDev := newTunDevice(tunName, "10.0.85.1", serverHost, cfg.Proxy.DNS)
 		if tunDev == nil {
 			slog.Error("tun mode not supported on this platform")
 			os.Exit(1)

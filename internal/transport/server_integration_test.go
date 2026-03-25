@@ -664,7 +664,7 @@ func TestServer_AuthenticatedHTTP2Handler(t *testing.T) {
 
 	// Test POST — body goes to upstream pipe, response is 200 OK.
 	postBody := "hello-ghost-h2"
-	postReq, _ := http.NewRequest(http.MethodPost, "https://localhost/api/v1/sync", bytes.NewReader([]byte(postBody)))
+	postReq, _ := http.NewRequest(http.MethodPost, "https://localhost/api/upload", bytes.NewReader([]byte(postBody)))
 	postReq.Header.Set("X-Session-Token", token)
 	postResp, err := h2cc.RoundTrip(postReq)
 	if err != nil {
@@ -677,7 +677,7 @@ func TestServer_AuthenticatedHTTP2Handler(t *testing.T) {
 	}
 
 	// Test GET — streams downstream data from pipe.
-	getReq, _ := http.NewRequest(http.MethodGet, "https://localhost/api/v1/events/test", nil)
+	getReq, _ := http.NewRequest(http.MethodGet, "https://localhost/api/download", nil)
 	getReq.Header.Set("X-Session-Token", token)
 	getResp, err := h2cc.RoundTrip(getReq)
 	if err != nil {
@@ -694,7 +694,7 @@ func TestServer_AuthenticatedHTTP2Handler(t *testing.T) {
 	}
 
 	// Test 403 without token.
-	badReq, _ := http.NewRequest(http.MethodGet, "https://localhost/api/v1/events/test", nil)
+	badReq, _ := http.NewRequest(http.MethodGet, "https://localhost/api/download", nil)
 	badResp, err := h2cc.RoundTrip(badReq)
 	if err != nil {
 		t.Fatalf("bad RoundTrip: %v", err)

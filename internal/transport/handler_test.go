@@ -39,7 +39,7 @@ func TestGhostHandler_Post(t *testing.T) {
 	handler, token, upR, _ := testHandlerSetup(t)
 
 	body := "hello"
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/sync", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/upload", strings.NewReader(body))
 	req.Header.Set("X-Session-Token", token)
 
 	// Drain upstream pipe in background so io.Copy in handler doesn't block.
@@ -66,7 +66,7 @@ func TestGhostHandler_Post(t *testing.T) {
 func TestGhostHandler_MissingToken(t *testing.T) {
 	handler, _, _, _ := testHandlerSetup(t)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/sync", strings.NewReader("hello"))
+	req := httptest.NewRequest(http.MethodPost, "/api/upload", strings.NewReader("hello"))
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 
@@ -78,7 +78,7 @@ func TestGhostHandler_MissingToken(t *testing.T) {
 func TestGhostHandler_InvalidToken(t *testing.T) {
 	handler, _, _, _ := testHandlerSetup(t)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/sync", strings.NewReader("hello"))
+	req := httptest.NewRequest(http.MethodPost, "/api/upload", strings.NewReader("hello"))
 	req.Header.Set("X-Session-Token", "wrong-token-value")
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -91,7 +91,7 @@ func TestGhostHandler_InvalidToken(t *testing.T) {
 func TestGhostHandler_GetEndpoint(t *testing.T) {
 	handler, token, _, downW := testHandlerSetup(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/events/test", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/download", nil)
 	req.Header.Set("X-Session-Token", token)
 
 	// Feed downstream data then close pipe so handler's read loop exits.
@@ -130,7 +130,7 @@ func TestGhostHandler_PostBodyLimit(t *testing.T) {
 
 	// Send a body larger than the 65536-byte limit.
 	bigBody := strings.Repeat("A", 70000)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/sync", strings.NewReader(bigBody))
+	req := httptest.NewRequest(http.MethodPost, "/api/upload", strings.NewReader(bigBody))
 	req.Header.Set("X-Session-Token", token)
 
 	received := make(chan int, 1)

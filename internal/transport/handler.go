@@ -5,7 +5,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strings"
 )
 
 // ghostHandler handles HTTP/2 requests for an authenticated Ghost session.
@@ -56,19 +55,14 @@ func (h *ghostHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.sessionMgr.Touch(h.sessionID)
 	}
 
-	// Route by method and path.
-	if !strings.HasPrefix(r.URL.Path, "/api/") {
-		http.NotFound(w, r)
-		return
-	}
-
-	switch r.Method {
-	case http.MethodPost:
+	// Route by method and derived path.
+	switch {
+	case r.Method == http.MethodPost && r.URL.Path == h.uploadPath:
 		h.handlePost(w, r)
-	case http.MethodGet:
+	case r.Method == http.MethodGet && r.URL.Path == h.downloadPath:
 		h.handleGet(w, r)
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		http.NotFound(w, r)
 	}
 }
 

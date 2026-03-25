@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -119,9 +120,33 @@ func main() {
 	healthMux := http.NewServeMux()
 	healthMux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		snap := metrics.Snapshot()
+		healthy := true
+		var reasons []string
+
+		// Check active sessions sanity.
+		if snap.ActiveSessions < 0 {
+			healthy = false
+			reasons = append(reasons, "negative active sessions")
+		}
+
+		// Check cert expiry if CertManager is available.
+		if cert, err := certMgr.GetCertificate(nil); err == nil && cert != nil {
+			leaf := cert.Leaf
+			if leaf == nil && len(cert.Certificate) > 0 {
+				if parsed, perr := x509.ParseCertificate(cert.Certificate[0]); perr == nil {
+					leaf = parsed
+				}
+			}
+			if leaf != nil && time.Until(leaf.NotAfter) < 24*time.Hour {
+				healthy = false
+				reasons = append(reasons, "cert expires within 24h")
+			}
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"healthy":        true,
+			"healthy":        healthy,
+			"reasons":        reasons,
 			"sessions":       snap.ActiveSessions,
 			"total_sessions": snap.TotalSessions,
 			"uptime_seconds": time.Since(snap.Uptime).Seconds(),

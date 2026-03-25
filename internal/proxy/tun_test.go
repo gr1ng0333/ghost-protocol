@@ -42,6 +42,9 @@ func TestNewTunDevice_Fields(t *testing.T) {
 	if td.closed {
 		t.Error("closed should be false on new device")
 	}
+	if td.tunFD != -1 {
+		t.Errorf("tunFD = %d, want -1 on new device", td.tunFD)
+	}
 }
 
 func TestNewTunDevice_Interface(t *testing.T) {

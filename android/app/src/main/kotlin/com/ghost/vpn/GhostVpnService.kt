@@ -121,6 +121,21 @@ class GhostVpnService : VpnService() {
             ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
         )
 
+        // Run blocking VPN setup on background thread to avoid ANR
+        Thread {
+        // Register socket protector so Go transport sockets bypass VPN
+        var protectorSet = false
+        try {
+            ghost.Ghost.setSocketProtector(object : ghost.SocketProtector {
+                override fun protect(fd: Int): Boolean {
+                    return this@GhostVpnService.protect(fd)
+                }
+            })
+            protectorSet = true
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to set socket protector", e)
+        }
+
         // 2. Build VPN interface
         val builder = Builder()
             .setSession("Ghost VPN")
@@ -133,13 +148,14 @@ class GhostVpnService : VpnService() {
             .addDnsServer("1.1.1.1")
             .addDnsServer("8.8.8.8")
 
-        // TODO: Remove addDisallowedApplication once SocketProtector is integrated
-        // into the Go transport layer (requires internal/transport API change).
-        // For now, keep as defense-in-depth fallback.
-        try {
-            builder.addDisallowedApplication(packageName)
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to exclude self from VPN", e)
+        // Fallback: exclude self from VPN if SocketProtector is not available.
+        // When protect() is wired via SocketProtector, this is unnecessary.
+        if (!protectorSet) {
+            try {
+                builder.addDisallowedApplication(packageName)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to exclude self from VPN", e)
+            }
         }
 
         // 3. Establish TUN
@@ -159,7 +175,7 @@ class GhostVpnService : VpnService() {
             isRunning = false
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
-            return
+            return@Thread
         }
 
         // 4. Transfer fd ownership to Go
@@ -168,17 +184,10 @@ class GhostVpnService : VpnService() {
         // 5. Load config from ConfigStore
         val configJSON = configStore.toConfigJSON()
 
-        // 6. Set up Go log callback and socket protector
+        // 6. Set up Go log callback
         ghost.Ghost.setLogCallback(object : ghost.LogCallback {
             override fun log(level: String?, message: String?) {
                 Log.d("GhostGo", "[${level ?: "?"} ] ${message ?: ""}")
-            }
-        })
-
-        // Register socket protector so Go transport sockets bypass VPN
-        ghost.Ghost.setSocketProtector(object : ghost.SocketProtector {
-            override fun protect(fd: Int): Boolean {
-                return this@GhostVpnService.protect(fd)
             }
         })
 
@@ -223,6 +232,7 @@ class GhostVpnService : VpnService() {
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
         }
+        }.start()
     }
 
     private fun disconnect() {

@@ -388,9 +388,8 @@ func TestConnManager_BackoffTiming(t *testing.T) {
 	mc.alive.Store(false)
 
 	// Wait for all 4 retry attempts + some margin.
-	// Backoff: 1s + 2s + 4s + 8s = 15s total, but MaxRetries=4 so it tries 4 times.
-	// Total wait: ~1+2+4+8 = ~15s. We wait up to 18s.
-	if !waitFor(t, 18*time.Second, func() bool { return dialCount.Load() >= 5 }) {
+	// Backoff: 0 + 1s + 2s + 4s = 7s total with MaxRetries=4.
+	if !waitFor(t, 12*time.Second, func() bool { return dialCount.Load() >= 5 }) {
 		t.Logf("dial count = %d (expected 5: 1 initial + 4 retries)", dialCount.Load())
 	}
 
@@ -404,9 +403,9 @@ func TestConnManager_BackoffTiming(t *testing.T) {
 	}
 
 	// Verify gaps between reconnect attempts (indices 1→2, 2→3, 3→4).
-	// Backoff sequence: Next() returns 1s, 2s, 4s, 8s.
-	// So gaps between consecutive dials are 2s, 4s, 8s.
-	expectedGaps := []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second}
+	// Backoff sequence: Next() returns 0, 1s, 2s, 4s.
+	// So gaps between consecutive dials are 1s, 2s, 4s.
+	expectedGaps := []time.Duration{1 * time.Second, 2 * time.Second, 4 * time.Second}
 	tolerance := 500 * time.Millisecond
 
 	for i := 0; i < len(expectedGaps) && i+2 < len(times); i++ {

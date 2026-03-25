@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"syscall"
 
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
@@ -32,6 +33,8 @@ type tunDevice struct {
 	mtu        uint32       // MTU, default 1500
 	tunIP      string       // IP address for TUN interface, e.g. "10.0.85.1"
 	serverAddr string       // Ghost server IP to exclude from tunnel
+	dnsAddr    string       // DNS server address for tunnel DNS queries
+	tunFD      int          // TUN file descriptor, -1 if not open
 	stack      *stack.Stack // gVisor network stack
 	tunnel     StreamOpener
 	ctx        context.Context
@@ -44,12 +47,18 @@ type tunDevice struct {
 // name: TUN interface name (e.g., "ghost0")
 // tunIP: IP address for TUN interface (e.g., "10.0.85.1")
 // serverAddr: Ghost server IP to exclude from tunnel (prevents routing loop)
-func NewTunDevice(name, tunIP, serverAddr string) TunDevice {
+// dnsAddr: DNS server IP for tunnel DNS queries (e.g., "8.8.8.8")
+func NewTunDevice(name, tunIP, serverAddr, dnsAddr string) TunDevice {
+	if dnsAddr == "" {
+		dnsAddr = "8.8.8.8"
+	}
 	return &tunDevice{
 		name:       name,
 		mtu:        1500,
 		tunIP:      tunIP,
 		serverAddr: serverAddr,
+		dnsAddr:    dnsAddr,
+		tunFD:      -1,
 	}
 }
 
@@ -68,6 +77,16 @@ func (t *tunDevice) Start(ctx context.Context, tunnel StreamOpener) error {
 	if err != nil {
 		return fmt.Errorf("tun.Open(%s): %w", t.name, err)
 	}
+	t.tunFD = fd
+
+	// Ensure fd is closed if Start fails partway through
+	startOK := false
+	defer func() {
+		if !startOK {
+			syscall.Close(t.tunFD)
+			t.tunFD = -1
+		}
+	}()
 
 	// Create gVisor link endpoint over the TUN fd.
 	// EthernetHeader=false because TUN delivers raw IP packets (no L2).
@@ -144,6 +163,7 @@ func (t *tunDevice) Start(ctx context.Context, tunnel StreamOpener) error {
 		return fmt.Errorf("tun: setup routing: %w", err)
 	}
 
+	startOK = true
 	slog.Info("tun device started", "name", t.name, "mtu", t.mtu)
 	return nil
 }
@@ -167,6 +187,11 @@ func (t *tunDevice) Stop() error {
 	if t.stack != nil {
 		t.stack.Close()
 		t.stack.Wait()
+	}
+
+	if t.tunFD >= 0 {
+		syscall.Close(t.tunFD)
+		t.tunFD = -1
 	}
 
 	slog.Info("tun device stopped", "name", t.name)
@@ -242,7 +267,7 @@ func (t *tunDevice) setupUDPForwarder(s *stack.Stack) {
 		}
 
 		conn := gonet.NewUDPConn(&wq, ep)
-		go t.handleDNS(conn, id.LocalAddress.String())
+		go t.handleDNS(conn, t.dnsAddr)
 		return true
 	})
 	s.SetTransportProtocolHandler(udp.ProtocolNumber, udpFwd.HandlePacket)

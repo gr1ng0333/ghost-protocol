@@ -547,7 +547,7 @@ func (s *ghostServer) handleGhost(ctx context.Context, conn *peekConn, chi *clie
 	handler.sessionID = sessionID
 
 	// Start stream dispatch loop.
-	go s.dispatchStreams(ctx, serverMux, stats)
+	go s.dispatchStreams(ctx, serverMux, stats, sessionID)
 
 	sess := &ghostSession{
 		id:         sessionID,
@@ -599,22 +599,27 @@ func (s *ghostServer) handleGhost(ctx context.Context, conn *peekConn, chi *clie
 }
 
 // dispatchStreams accepts streams from the ServerMux and dials destinations.
-func (s *ghostServer) dispatchStreams(ctx context.Context, smux mux.ServerMux, stats *serverStatsProvider) {
+func (s *ghostServer) dispatchStreams(ctx context.Context, smux mux.ServerMux, stats *serverStatsProvider, sessionID string) {
 	for {
 		stream, dest, err := smux.Accept(ctx)
 		if err != nil {
 			return // mux closed
 		}
-		go s.handleStream(ctx, stream, dest, stats)
+		go s.handleStream(ctx, stream, dest, stats, sessionID)
 	}
 }
 
 // handleStream dials the real destination and copies data bidirectionally.
-func (s *ghostServer) handleStream(ctx context.Context, stream mux.Stream, dest mux.Destination, stats *serverStatsProvider) {
+func (s *ghostServer) handleStream(ctx context.Context, stream mux.Stream, dest mux.Destination, stats *serverStatsProvider, sessionID string) {
 	defer stream.Close()
 
 	stats.activeStreams.Add(1)
 	defer stats.activeStreams.Add(-1)
+
+	// Touch session to prevent idle timeout during active streaming.
+	if s.sessionMgr != nil {
+		s.sessionMgr.Touch(sessionID)
+	}
 
 	addr := net.JoinHostPort(dest.Addr, strconv.Itoa(int(dest.Port)))
 	target, err := net.DialTimeout("tcp", addr, 10*time.Second)
@@ -629,6 +634,9 @@ func (s *ghostServer) handleStream(ctx context.Context, stream mux.Stream, dest 
 	go func() {
 		n, _ := io.Copy(target, stream) // client → destination
 		stats.bytesRecv.Add(uint64(n))
+		if s.sessionMgr != nil {
+			s.sessionMgr.Touch(sessionID)
+		}
 		if tc, ok := target.(*net.TCPConn); ok {
 			tc.CloseWrite()
 		}
@@ -637,6 +645,9 @@ func (s *ghostServer) handleStream(ctx context.Context, stream mux.Stream, dest 
 
 	n, _ := io.Copy(stream, target) // destination → client
 	stats.bytesSent.Add(uint64(n))
+	if s.sessionMgr != nil {
+		s.sessionMgr.Touch(sessionID)
+	}
 	<-done
 }
 
