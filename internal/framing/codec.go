@@ -47,6 +47,10 @@ type encoder struct {
 // TotalLen is the size of the frame body (everything after the 2-byte prefix):
 // headerSize(7) + len(Payload) + len(Padding).
 func (e *encoder) Encode(f *Frame) error {
+	if err := ValidateFrame(f); err != nil {
+		return fmt.Errorf("encode frame: %w", err)
+	}
+
 	payloadLen := len(f.Payload)
 	if payloadLen > MaxPayloadSize {
 		return fmt.Errorf("encode frame: payload size %d exceeds maximum %d", payloadLen, MaxPayloadSize)

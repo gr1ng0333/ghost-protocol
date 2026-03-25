@@ -2,9 +2,12 @@ package transport
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"net"
 	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -289,5 +292,62 @@ func TestConn_DoubleClose(t *testing.T) {
 		t.Log("second Close returned nil (unexpected but acceptable)")
 	} else {
 		t.Logf("second Close: %v", err)
+	}
+}
+
+// TestDial_UsesInjectedNetDialer verifies that h2Dialer uses the NetDialer
+// from H2Config when one is provided. The injected dialer's Control function
+// returns a sentinel error so no real network connection is needed.
+func TestDial_UsesInjectedNetDialer(t *testing.T) {
+	var controlCalled bool
+	customDialer := &net.Dialer{
+		Control: func(network, address string, c syscall.RawConn) error {
+			controlCalled = true
+			// Return a sentinel error to abort immediately — no real I/O needed.
+			return fmt.Errorf("sentinel: injected dialer control invoked")
+		},
+	}
+
+	cfg := DefaultChromeH2Config()
+	cfg.NetDialer = customDialer
+
+	clientKP, _ := auth.GenKeyPair()
+	serverKP, _ := auth.GenKeyPair()
+	ca, _ := auth.NewClientAuth(clientKP.Private, serverKP.Public)
+	d := NewDialer(cfg, ca)
+
+	_, err := d.Dial(context.Background(), "127.0.0.1:1", "example.com")
+
+	if !controlCalled {
+		t.Error("injected NetDialer.Control was not called; expected Dialer to use H2Config.NetDialer")
+	}
+	if err == nil {
+		t.Error("expected an error from the sentinel dialer, got nil")
+	}
+}
+
+// TestDial_DefaultNetDialer verifies that a nil H2Config.NetDialer falls back
+// to a default net.Dialer without panicking. A refused-connection error is
+// expected; a nil-pointer dereference is not.
+func TestDial_DefaultNetDialer(t *testing.T) {
+	cfg := DefaultChromeH2Config()
+	// cfg.NetDialer is nil — the zero value.
+
+	clientKP, _ := auth.GenKeyPair()
+	serverKP, _ := auth.GenKeyPair()
+	ca, _ := auth.NewClientAuth(clientKP.Private, serverKP.Public)
+	d := NewDialer(cfg, ca)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	conn, err := d.Dial(ctx, "127.0.0.1:1", "example.com")
+	if conn != nil {
+		conn.Close()
+	}
+	// We expect a network error (connection refused / timeout).
+	// What is NOT acceptable is a nil pointer dereference or missing error.
+	if err == nil {
+		t.Error("expected connection error for unreachable 127.0.0.1:1, got nil")
 	}
 }

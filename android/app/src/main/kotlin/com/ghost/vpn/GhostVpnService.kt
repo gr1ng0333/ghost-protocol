@@ -13,6 +13,12 @@ import android.content.ComponentCallbacks2
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
 /**
  * Foreground [VpnService] that owns the TUN interface and Ghost tunnel.
@@ -51,6 +57,12 @@ class GhostVpnService : VpnService() {
     /** Saved mode before battery saver switched us to "performance". */
     private var previousMode: String? = null
 
+    /** Coroutine scope for background work; cancelled in [onDestroy]. */
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** Tracks the in-flight connect coroutine for idempotency. */
+    private var connectJob: Job? = null
+
     /** Monitors underlying network changes to trigger transport reconnect. */
     private var networkMonitor: NetworkMonitor? = null
 
@@ -60,6 +72,16 @@ class GhostVpnService : VpnService() {
                 val pm = getSystemService(PowerManager::class.java)
                 if (pm.isPowerSaveMode) {
                     previousMode = currentMode
+                    // Battery saver → Performance mode rationale:
+                    // Ghost's "Stealth" and "Balanced" modes rely on precise inter-packet
+                    // timing enforced by TimerFrameWriter and the cover-traffic generator.
+                    // Under Android battery-save mode the OS aggressively throttles CPU
+                    // wakeups and delays timers, which breaks the timing windows and
+                    // produces detectable pauses in the cover stream — the opposite of
+                    // stealth.  "Performance" disables timing-dependent shaping so the
+                    // tunnel stays alive and behaves normally under the CPU throttle.
+                    // The previous mode is stored in `previousMode` and restored when
+                    // power-save is deactivated, so the user's chosen mode is not lost.
                     client?.let { ghost.Ghost.setMode("performance") }
                     currentMode = "performance"
                     Log.i(TAG, "Battery saver ON — switched to performance mode")
@@ -96,7 +118,11 @@ class GhostVpnService : VpnService() {
     }
 
     private fun connect() {
-        // Idempotent: skip if already running
+        // Idempotent: skip if a connect is already in progress or tunnel is up.
+        if (connectJob?.isActive == true) {
+            Log.d(TAG, "Connect already in progress — ignoring duplicate connect()")
+            return
+        }
         if (isRunning && client != null) {
             Log.d(TAG, "Already connected — ignoring duplicate connect()")
             return
@@ -121,8 +147,8 @@ class GhostVpnService : VpnService() {
             ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
         )
 
-        // Run blocking VPN setup on background thread to avoid ANR
-        Thread {
+        // Run blocking VPN setup on an IO coroutine to avoid ANR.
+        connectJob = serviceScope.launch {
         // Register socket protector so Go transport sockets bypass VPN
         var protectorSet = false
         try {
@@ -175,7 +201,7 @@ class GhostVpnService : VpnService() {
             isRunning = false
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
-            return@Thread
+            return@launch
         }
 
         // 4. Transfer fd ownership to Go
@@ -232,10 +258,12 @@ class GhostVpnService : VpnService() {
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
         }
-        }.start()
+        }
     }
 
     private fun disconnect() {
+        connectJob?.cancel()
+        connectJob = null
         networkMonitor?.stop()
         networkMonitor = null
         try {
@@ -279,6 +307,7 @@ class GhostVpnService : VpnService() {
             unregisterReceiver(powerReceiver)
         } catch (_: Exception) { /* not registered */ }
         disconnect()
+        serviceScope.cancel()
         super.onDestroy()
     }
 

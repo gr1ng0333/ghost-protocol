@@ -758,14 +758,16 @@ func TestCoverage_Roundtrip_PaddingOnly(t *testing.T) {
 }
 
 func TestCoverage_Roundtrip_MinimalFrame(t *testing.T) {
-	// Frame with no payload and no padding — TotalLen == headerSize (7)
+	// Frame with no payload and no padding — TotalLen == headerSize (7).
+	// FrameKeepAlive is used because it is a connection-level frame that
+	// naturally carries StreamID=0 and no payload.
 	f := &Frame{
-		Type:     FrameData,
+		Type:     FrameKeepAlive,
 		StreamID: 0,
 	}
 	got := roundtrip(t, f)
-	if got.Type != FrameData {
-		t.Errorf("Type = %d, want %d", got.Type, FrameData)
+	if got.Type != FrameKeepAlive {
+		t.Errorf("Type = %d, want %d", got.Type, FrameKeepAlive)
 	}
 	if got.StreamID != 0 {
 		t.Errorf("StreamID = %d, want 0", got.StreamID)
@@ -852,5 +854,151 @@ func TestCoverage_Decode_PayloadLenExceedsMax(t *testing.T) {
 	_, err := dec.Decode()
 	if !errors.Is(err, ErrFrameCorrupt) {
 		t.Errorf("expected ErrFrameCorrupt, got %v", err)
+	}
+}
+
+// --- VALIDATEFRAME TESTS ---
+
+func TestValidateFrame_Valid_Data(t *testing.T) {
+	f := &Frame{Type: FrameData, StreamID: 1, Payload: []byte("hello")}
+	if err := ValidateFrame(f); err != nil {
+		t.Errorf("ValidateFrame(valid FrameData) = %v, want nil", err)
+	}
+}
+
+func TestValidateFrame_Valid_Open(t *testing.T) {
+	op := &OpenPayload{Proto: ProtoTCP, AddrType: AddrIPv4, Addr: "93.184.216.34", Port: 443}
+	payload, _ := EncodeOpenPayload(op)
+	f := &Frame{Type: FrameOpen, StreamID: 1, Payload: payload}
+	if err := ValidateFrame(f); err != nil {
+		t.Errorf("ValidateFrame(valid FrameOpen) = %v, want nil", err)
+	}
+}
+
+func TestValidateFrame_Valid_Close(t *testing.T) {
+	f := &Frame{Type: FrameClose, StreamID: 7}
+	if err := ValidateFrame(f); err != nil {
+		t.Errorf("ValidateFrame(valid FrameClose) = %v, want nil", err)
+	}
+}
+
+func TestValidateFrame_Valid_Padding(t *testing.T) {
+	f := &Frame{Type: FramePadding, StreamID: 0, Payload: []byte("random noise")}
+	if err := ValidateFrame(f); err != nil {
+		t.Errorf("ValidateFrame(valid FramePadding) = %v, want nil", err)
+	}
+}
+
+func TestValidateFrame_Valid_KeepAlive(t *testing.T) {
+	f := &Frame{Type: FrameKeepAlive, StreamID: 0}
+	if err := ValidateFrame(f); err != nil {
+		t.Errorf("ValidateFrame(valid FrameKeepAlive) = %v, want nil", err)
+	}
+}
+
+func TestValidateFrame_Valid_UDP(t *testing.T) {
+	f := &Frame{Type: FrameUDP, StreamID: 3, Payload: []byte{0x01, 0x02, 0x03}}
+	if err := ValidateFrame(f); err != nil {
+		t.Errorf("ValidateFrame(valid FrameUDP) = %v, want nil", err)
+	}
+}
+
+func TestValidateFrame_Nil(t *testing.T) {
+	err := ValidateFrame(nil)
+	if err == nil {
+		t.Fatal("ValidateFrame(nil) = nil, want error")
+	}
+}
+
+func TestValidateFrame_InvalidType(t *testing.T) {
+	f := &Frame{Type: 0xFF, StreamID: 1}
+	err := ValidateFrame(f)
+	if err == nil {
+		t.Fatal("ValidateFrame(unknown type) = nil, want error")
+	}
+	if !errors.Is(err, ErrFrameCorrupt) {
+		t.Errorf("ValidateFrame(unknown type) error should wrap ErrFrameCorrupt, got %v", err)
+	}
+}
+
+func TestValidateFrame_OversizedPayload(t *testing.T) {
+	f := &Frame{Type: FrameData, StreamID: 1, Payload: make([]byte, MaxPayloadSize+1)}
+	err := ValidateFrame(f)
+	if err == nil {
+		t.Fatal("ValidateFrame(oversized payload) = nil, want error")
+	}
+	if !errors.Is(err, ErrFrameCorrupt) {
+		t.Errorf("ValidateFrame(oversized payload) error should wrap ErrFrameCorrupt, got %v", err)
+	}
+}
+
+func TestValidateFrame_DataStreamIDZero(t *testing.T) {
+	f := &Frame{Type: FrameData, StreamID: 0, Payload: []byte("data")}
+	err := ValidateFrame(f)
+	if err == nil {
+		t.Fatal("ValidateFrame(FrameData StreamID=0) = nil, want error")
+	}
+	if !errors.Is(err, ErrFrameCorrupt) {
+		t.Errorf("error should wrap ErrFrameCorrupt, got %v", err)
+	}
+}
+
+func TestValidateFrame_OpenStreamIDZero(t *testing.T) {
+	op := &OpenPayload{Proto: ProtoTCP, AddrType: AddrIPv4, Addr: "1.2.3.4", Port: 80}
+	payload, _ := EncodeOpenPayload(op)
+	f := &Frame{Type: FrameOpen, StreamID: 0, Payload: payload}
+	err := ValidateFrame(f)
+	if err == nil {
+		t.Fatal("ValidateFrame(FrameOpen StreamID=0) = nil, want error")
+	}
+	if !errors.Is(err, ErrFrameCorrupt) {
+		t.Errorf("error should wrap ErrFrameCorrupt, got %v", err)
+	}
+}
+
+func TestValidateFrame_CloseStreamIDZero(t *testing.T) {
+	f := &Frame{Type: FrameClose, StreamID: 0}
+	err := ValidateFrame(f)
+	if err == nil {
+		t.Fatal("ValidateFrame(FrameClose StreamID=0) = nil, want error")
+	}
+	if !errors.Is(err, ErrFrameCorrupt) {
+		t.Errorf("error should wrap ErrFrameCorrupt, got %v", err)
+	}
+}
+
+func TestValidateFrame_OpenEmptyPayload(t *testing.T) {
+	f := &Frame{Type: FrameOpen, StreamID: 1, Payload: nil}
+	err := ValidateFrame(f)
+	if err == nil {
+		t.Fatal("ValidateFrame(FrameOpen empty payload) = nil, want error")
+	}
+	if !errors.Is(err, ErrFrameCorrupt) {
+		t.Errorf("error should wrap ErrFrameCorrupt, got %v", err)
+	}
+}
+
+func TestEncode_ValidatesFrame(t *testing.T) {
+	// Encoder must propagate ValidateFrame errors.
+	cases := []struct {
+		name string
+		f    *Frame
+	}{
+		{"nil frame", nil},
+		{"unknown type", &Frame{Type: 0xFE, StreamID: 1, Payload: []byte("x")}},
+		{"data StreamID=0", &Frame{Type: FrameData, StreamID: 0, Payload: []byte("x")}},
+		{"open StreamID=0", &Frame{Type: FrameOpen, StreamID: 0, Payload: []byte{0x01}}},
+		{"open empty payload", &Frame{Type: FrameOpen, StreamID: 1}},
+		{"close StreamID=0", &Frame{Type: FrameClose, StreamID: 0}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			enc := NewEncoder(&buf)
+			err := enc.Encode(tc.f)
+			if err == nil {
+				t.Fatalf("Encode(%s) = nil, want error", tc.name)
+			}
+		})
 	}
 }

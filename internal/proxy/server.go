@@ -82,7 +82,9 @@ func (s *socks5Server) handleConn(ctx context.Context, clientConn net.Conn, tunn
 
 	stream, err := tunnel(ctx, addr, port)
 	if err != nil {
-		sc.SendReply(repConnectionRefused, "0.0.0.0", 0)
+		if replyErr := sc.SendReply(repConnectionRefused, "0.0.0.0", 0); replyErr != nil {
+			slog.Warn("socks5 connection-refused reply failed", "err", replyErr)
+		}
 		slog.Warn("tunnel open failed", "dest", addr, "port", port, "err", err)
 		return
 	}

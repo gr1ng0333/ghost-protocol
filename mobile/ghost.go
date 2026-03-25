@@ -43,12 +43,9 @@ func SetSocketProtector(p SocketProtector) {
 }
 
 // protectedDialer returns a net.Dialer whose Control function calls
-// the registered SocketProtector on each new socket.
-// NOTE: Currently unused because internal/transport.h2Dialer creates its own
-// net.Dialer locally. To integrate, transport.NewDialer (or H2Config) needs
-// a NetDialer *net.Dialer field so mobile/ can pass protectedDialer() through.
-// Until then, addDisallowedApplication(packageName) in the Android VPN Builder
-// prevents routing loops as a fallback.
+// the registered SocketProtector on each new socket before it connects.
+// It is injected into transport.H2Config.NetDialer so every outbound TCP
+// connection made by the Ghost transport is protected from the VPN tunnel.
 func protectedDialer() *net.Dialer {
 	return &net.Dialer{
 		Control: func(network, address string, c syscall.RawConn) error {
@@ -289,8 +286,11 @@ func Start(fd int, configJSON string) (*Client, error) {
 		return nil, fmt.Errorf("ghost.Start: shared secret: %w", err)
 	}
 
-	// 6. Create Dialer
-	dialer := transport.NewDialer(transport.DefaultChromeH2Config(), clientAuth)
+	// 6. Create Dialer — inject protectedDialer so every outbound TCP socket
+	// is protected via VpnService.protect() before connect().
+	h2cfg := transport.DefaultChromeH2Config()
+	h2cfg.NetDialer = protectedDialer()
+	dialer := transport.NewDialer(h2cfg, clientAuth)
 
 	// 7. Load shaping profile
 	profile, err := loadEmbeddedProfile()

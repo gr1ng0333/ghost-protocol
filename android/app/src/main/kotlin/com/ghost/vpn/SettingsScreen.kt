@@ -14,7 +14,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
@@ -114,6 +117,39 @@ fun SettingsScreen(
                 .verticalScroll(rememberScrollState())
         ) {
             Spacer(modifier = Modifier.height(8.dp))
+
+            // ---- Plaintext-storage security warning ----
+            // Shown only when EncryptedSharedPreferences init failed and key material
+            // is being kept without encryption. Requires active developer attention.
+            if (configStore.isUsingPlaintextStorage) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.Top
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Warning,
+                            contentDescription = "Security warning",
+                            tint = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "⚠ SECURITY: Encrypted key storage is unavailable on this device. " +
+                                "Your private keys are stored WITHOUT encryption. " +
+                                "The Android Keystore may be broken or the app data was migrated. " +
+                                "Do not use this device for sensitive connections.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+            }
 
             // ---- Server section ----
             SectionHeader("Server")
@@ -256,6 +292,39 @@ fun SettingsScreen(
                             .apply()
                     }
                 )
+            }
+
+            // OEM battery-kill guidance
+            // Many OEM Android builds (Huawei EMUI, Xiaomi MIUI, OnePlus, Samsung with
+            // aggressive "App Power Management", etc.) kill background services more
+            // aggressively than stock Android, which breaks always-on VPN behavior.
+            // dontkillmyapp.com provides device-specific workarounds.
+            Spacer(modifier = Modifier.height(8.dp))
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.secondaryContainer
+                )
+            ) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Text(
+                        text = "🔋 OEM Battery-Kill Guidance",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Some manufacturers (Huawei, Xiaomi, OnePlus, Samsung, etc.) aggressively " +
+                            "terminate background services beyond Android's standard behavior, " +
+                            "which can disrupt the VPN tunnel even when \"Auto-connect on boot\" " +
+                            "is enabled. To ensure reliable operation:\n" +
+                            "• Disable battery optimisation for Ghost VPN in device Settings.\n" +
+                            "• Enable \"Allow background activity\" or equivalent.\n" +
+                            "• Consult dontkillmyapp.com for step-by-step device-specific instructions.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(24.dp))

@@ -44,6 +44,13 @@ sealed class VpnState {
     object Reconnecting : VpnState()
 
     /**
+     * A disconnect request has been sent; waiting for the service to confirm shutdown.
+     * Transitions to [Disconnected] on success or [Error] if the service does not
+     * respond within [DISCONNECT_TIMEOUT_MS].
+     */
+    object Disconnecting : VpnState()
+
+    /**
      * An error prevented or interrupted the VPN connection.
      *
      * @property message Human-readable error description.
@@ -87,18 +94,37 @@ class VpnViewModel : ViewModel() {
     }
 
     /**
-     * Tears down the VPN by sending [GhostVpnService.ACTION_DISCONNECT]
-     * and cancelling stats polling.
+     * Tears down the VPN by sending [GhostVpnService.ACTION_DISCONNECT], then waits
+     * up to [DISCONNECT_TIMEOUT_MS] for the service to confirm shutdown.
+     *
+     * On success the state transitions to [VpnState.Disconnected].
+     * On timeout the state transitions to [VpnState.Error] with a clear message so
+     * the user knows the tunnel may still be active (not silently claimed as stopped).
      *
      * @param context Android context used to build and send the service Intent.
      */
     fun disconnect(context: Context) {
         stopStatsPolling()
+        _state.value = VpnState.Disconnecting
         val intent = Intent(context, GhostVpnService::class.java).apply {
             action = GhostVpnService.ACTION_DISCONNECT
         }
         context.startService(intent)
-        _state.value = VpnState.Disconnected
+        viewModelScope.launch {
+            val deadline = System.currentTimeMillis() + DISCONNECT_TIMEOUT_MS
+            while (System.currentTimeMillis() < deadline) {
+                delay(DISCONNECT_POLL_MS)
+                if (!GhostVpnService.isRunning && GhostVpnService.client == null) {
+                    _state.value = VpnState.Disconnected
+                    return@launch
+                }
+            }
+            // Service did not confirm shutdown within the timeout window.
+            _state.value = VpnState.Error(
+                "Disconnect timed out — the tunnel may still be active. " +
+                "Force-stop the app if the issue persists."
+            )
+        }
     }
 
     /**
@@ -172,5 +198,12 @@ class VpnViewModel : ViewModel() {
     fun stopStatsPolling() {
         pollingJob?.cancel()
         pollingJob = null
+    }
+
+    private companion object {
+        /** Maximum time to wait for service confirmation after a disconnect request. */
+        const val DISCONNECT_TIMEOUT_MS = 6_000L
+        /** Polling interval while waiting for disconnect confirmation. */
+        const val DISCONNECT_POLL_MS = 300L
     }
 }

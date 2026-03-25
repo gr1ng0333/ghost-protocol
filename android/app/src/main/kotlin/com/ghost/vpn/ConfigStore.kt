@@ -17,6 +17,7 @@ import org.json.JSONObject
  *
  * If the device's Keystore is broken or unavailable, encrypted storage falls back to
  * regular [SharedPreferences] with a logged warning — the app will not crash.
+ * [isUsingPlaintextStorage] will be `true` in that case so callers can surface a warning.
  *
  * @param context Application or Activity context used to open preference files.
  */
@@ -25,7 +26,19 @@ class ConfigStore(context: Context) {
     private val prefs: SharedPreferences =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-    private val securePrefs: SharedPreferences = createSecurePrefs(context)
+    // createSecurePrefs returns (prefs, isPlaintext). Split into two vals so
+    // isUsingPlaintextStorage is available as a plain property.
+    private val _secureResult: Pair<SharedPreferences, Boolean> = createSecurePrefs(context)
+    private val securePrefs: SharedPreferences = _secureResult.first
+
+    /**
+     * `true` when the Android Keystore was unavailable and encrypted storage
+     * initialization fell back to plaintext [SharedPreferences].
+     *
+     * SECURITY WARNING: when this is `true`, cryptographic key material is stored
+     * without encryption on the device.  Surface this prominently in the UI.
+     */
+    val isUsingPlaintextStorage: Boolean = _secureResult.second
 
     /** Server address in "host:port" format (e.g. "example.com:443"). */
     var serverAddr: String
@@ -63,13 +76,16 @@ class ConfigStore(context: Context) {
         set(value) = prefs.edit().putString(KEY_LOG_LEVEL, value).apply()
 
     /**
-     * Returns `true` if the minimum required fields are populated:
-     * server address, server public key, and client private key.
+     * Returns `true` if the minimum required fields are populated **and** the key
+     * fields are well-formed (exactly 64 lowercase or uppercase hex characters).
+     *
+     * This guards against starting the tunnel with obviously invalid key material
+     * (truncated paste, wrong format, empty field after a storage migration).
      */
     fun isConfigured(): Boolean {
         return serverAddr.isNotBlank() &&
-            serverPublicKey.isNotBlank() &&
-            clientPrivateKey.isNotBlank()
+            HEX_64.matches(serverPublicKey) &&
+            HEX_64.matches(clientPrivateKey)
     }
 
     /**
@@ -77,6 +93,13 @@ class ConfigStore(context: Context) {
      *
      * If [serverSni] is empty, the host portion of [serverAddr] (with port stripped)
      * is used as the SNI value.
+     *
+     * FIELD NAME CONTRACT: the JSON keys below must exactly match the Go struct tags in
+     * mobile/ghost.go (mobileConfig). If you rename a Go field, update the put() calls
+     * here to match — both sides are NOT checked at compile time.
+     *   Go field → JSON key: ServerAddr→"server_addr", ServerSNI→"server_sni",
+     *   ServerPublicKey→"server_public_key", ClientPrivateKey→"client_private_key",
+     *   ShapingMode→"shaping_mode", AutoMode→"auto_mode", LogLevel→"log_level"
      *
      * @return A JSON string matching the Ghost Go API config format.
      */
@@ -108,24 +131,35 @@ class ConfigStore(context: Context) {
         private const val KEY_AUTO_MODE = "auto_mode"
         private const val KEY_LOG_LEVEL = "log_level"
 
+        /** Matches exactly 64 hexadecimal characters (case-insensitive). */
+        private val HEX_64 = Regex("^[0-9a-fA-F]{64}$")
+
         /**
          * Attempts to create [EncryptedSharedPreferences]. On failure (broken Keystore,
          * unsupported device, etc.) falls back to regular [SharedPreferences] and logs
-         * a warning.
+         * a prominent warning.
+         *
+         * @return Pair of (SharedPreferences to use, isPlaintext).
          */
-        private fun createSecurePrefs(context: Context): SharedPreferences {
+        private fun createSecurePrefs(context: Context): Pair<SharedPreferences, Boolean> {
             return try {
                 val masterKeyAlias = MasterKeys.getOrCreate(MasterKeys.AES256_GCM_SPEC)
-                EncryptedSharedPreferences.create(
+                val encPrefs = EncryptedSharedPreferences.create(
                     SECURE_PREFS_NAME,
                     masterKeyAlias,
                     context,
                     EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
                     EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
                 )
+                Pair(encPrefs, false)
             } catch (e: Exception) {
-                Log.w(TAG, "EncryptedSharedPreferences unavailable, falling back to plain storage", e)
-                context.getSharedPreferences(SECURE_PREFS_NAME, Context.MODE_PRIVATE)
+                // ⚠ SECURITY WARNING: Keystore unavailable — key material will be
+                // stored WITHOUT encryption.  This is a last-resort fallback only.
+                // Surface isUsingPlaintextStorage=true in the UI so the user is aware.
+                Log.w(TAG, "⚠ SECURITY: EncryptedSharedPreferences unavailable — " +
+                    "falling back to PLAINTEXT storage for key material. " +
+                    "The device Keystore may be broken or the app data was migrated.", e)
+                Pair(context.getSharedPreferences(SECURE_PREFS_NAME, Context.MODE_PRIVATE), true)
             }
         }
     }

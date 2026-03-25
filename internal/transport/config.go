@@ -1,5 +1,7 @@
 package transport
 
+import "net"
+
 // H2Config holds HTTP/2 SETTINGS and behavioral parameters
 // that must match Chrome's fingerprint.
 type H2Config struct {
@@ -11,6 +13,12 @@ type H2Config struct {
 	PseudoHeaderOrder []string // Chrome 146: [":method", ":authority", ":scheme", ":path"]
 	PriorityMode      string   // "none" = no priority frames (Chrome behavior)
 	ALPSEnabled       bool     // informational — ALPS handled by uTLS preset
+
+	// NetDialer, if non-nil, is used for all outbound TCP connections.
+	// Set this to enable per-socket protection (e.g. Android VpnService.protect).
+	// If nil a zero-value net.Dialer is used (default behaviour, unchanged for
+	// non-Android builds).
+	NetDialer *net.Dialer
 }
 
 // DefaultChromeH2Config returns H2Config matching Chrome 146.

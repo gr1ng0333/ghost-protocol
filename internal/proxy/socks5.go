@@ -88,8 +88,11 @@ func (s *socks5Conn) Handshake() error {
 	}
 
 	if !found {
-		// Reply with no acceptable methods.
-		s.conn.Write([]byte{socks5Version, methodNoAcceptable})
+		// Inform client: no acceptable methods. Best-effort; if the write
+		// fails the connection is broken anyway, and we return that error.
+		if _, writeErr := s.conn.Write([]byte{socks5Version, methodNoAcceptable}); writeErr != nil {
+			return fmt.Errorf("send no-acceptable-methods reply: %w", writeErr)
+		}
 		return fmt.Errorf("no supported auth method (need 0x00)")
 	}
 
@@ -117,8 +120,9 @@ func (s *socks5Conn) ReadRequest() (addr string, port uint16, err error) {
 
 	cmd := header[1]
 	if cmd != cmdConnect {
-		rep := repCmdNotSupported
-		s.SendReply(byte(rep), "0.0.0.0", 0)
+		if replyErr := s.SendReply(repCmdNotSupported, "0.0.0.0", 0); replyErr != nil {
+			return "", 0, fmt.Errorf("unsupported command 0x%02x: send reply: %w", cmd, replyErr)
+		}
 		return "", 0, fmt.Errorf("unsupported command: 0x%02x", cmd)
 	}
 
@@ -151,7 +155,9 @@ func (s *socks5Conn) ReadRequest() (addr string, port uint16, err error) {
 		addr = net.IP(buf).String()
 
 	default:
-		s.SendReply(repAddrNotSupported, "0.0.0.0", 0)
+		if replyErr := s.SendReply(repAddrNotSupported, "0.0.0.0", 0); replyErr != nil {
+			return "", 0, fmt.Errorf("unsupported address type 0x%02x: send reply: %w", atyp, replyErr)
+		}
 		return "", 0, fmt.Errorf("unsupported address type: 0x%02x", atyp)
 	}
 

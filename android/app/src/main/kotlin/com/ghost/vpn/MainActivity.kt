@@ -239,6 +239,7 @@ fun ConnectionScreen(
                     is VpnState.Connecting -> "Connecting…"
                     is VpnState.Connected -> "Connected"
                     is VpnState.Reconnecting -> "Reconnecting…"
+                    is VpnState.Disconnecting -> "Disconnecting…"
                     is VpnState.Error -> "Error"
                 },
                 style = MaterialTheme.typography.headlineMedium,
@@ -350,7 +351,7 @@ fun StatusIndicator(state: VpnState) {
     val color = when (state) {
         is VpnState.Connected -> Color(0xFF4DB6AC)
         is VpnState.Disconnected -> Color(0xFF757575)
-        is VpnState.Connecting, is VpnState.Reconnecting -> Color(0xFFFFA726)
+        is VpnState.Connecting, is VpnState.Reconnecting, is VpnState.Disconnecting -> Color(0xFFFFA726)
         is VpnState.Error -> Color(0xFFCF6679)
     }
     Canvas(modifier = Modifier.size(80.dp)) {
@@ -411,7 +412,7 @@ fun ConnectButton(
     onDisconnect: () -> Unit,
     isConfigured: Boolean = true
 ) {
-    val isTransitioning = state is VpnState.Connecting || state is VpnState.Reconnecting
+    val isTransitioning = state is VpnState.Connecting || state is VpnState.Reconnecting || state is VpnState.Disconnecting
     val isConnected = state is VpnState.Connected
 
     val buttonColors = if (isConnected) {
@@ -436,7 +437,11 @@ fun ConnectButton(
             )
             Spacer(modifier = Modifier.width(8.dp))
             Text(
-                text = if (state is VpnState.Connecting) "CONNECTING…" else "RECONNECTING…"
+                text = when (state) {
+                    is VpnState.Connecting -> "CONNECTING…"
+                    is VpnState.Disconnecting -> "DISCONNECTING…"
+                    else -> "RECONNECTING…"
+                }
             )
         } else {
             Text(text = if (isConnected) "DISCONNECT" else "CONNECT")

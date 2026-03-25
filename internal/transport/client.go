@@ -138,8 +138,13 @@ func NewDialer(cfg H2Config, a auth.ClientAuth) Dialer {
 
 func (d *h2Dialer) Dial(ctx context.Context, addr, sni string) (Conn, error) {
 	// 1. Dial TCP with context support.
-	var dialer net.Dialer
-	rawConn, err := dialer.DialContext(ctx, "tcp", addr)
+	// Use the caller-supplied NetDialer (e.g. Android socket protector) when
+	// provided; fall back to a zero-value net.Dialer otherwise.
+	netDialer := d.cfg.NetDialer
+	if netDialer == nil {
+		netDialer = &net.Dialer{}
+	}
+	rawConn, err := netDialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("transport.Dial: TCP %s: %w", addr, err)
 	}
