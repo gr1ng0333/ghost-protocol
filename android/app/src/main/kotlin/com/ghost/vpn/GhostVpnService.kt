@@ -82,12 +82,12 @@ class GhostVpnService : VpnService() {
                     // tunnel stays alive and behaves normally under the CPU throttle.
                     // The previous mode is stored in `previousMode` and restored when
                     // power-save is deactivated, so the user's chosen mode is not lost.
-                    client?.let { ghost.Ghost.setMode("performance") }
+                    client?.setMode("performance")
                     currentMode = "performance"
                     Log.i(TAG, "Battery saver ON — switched to performance mode")
                 } else {
                     previousMode?.let { mode ->
-                        client?.let { ghost.Ghost.setMode(mode) }
+                        client?.setMode(mode)
                         currentMode = mode
                         previousMode = null
                         Log.i(TAG, "Battery saver OFF — restored $mode mode")
@@ -230,7 +230,7 @@ class GhostVpnService : VpnService() {
 
             // 8. Start network monitor for WiFi↔Mobile transitions
             networkMonitor = NetworkMonitor(
-                context = this,
+                context = this@GhostVpnService,
                 onNetworkChanged = {
                     Log.i(TAG, "Network changed — ConnManager will detect dead socket and reconnect")
                     updateNotification(getString(R.string.vpn_connecting))

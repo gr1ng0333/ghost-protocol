@@ -156,6 +156,8 @@ func handleTCPConn(ctx context.Context, conn net.Conn, addr string, port uint16,
 	go cp(stream, conn, func() { stream.Close() })
 	wg.Wait()
 }
+
+func handleDNS(ctx context.Context, conn net.Conn, dnsServer string, opener proxy.StreamOpener) {
 	defer conn.Close()
 
 	buf := make([]byte, 4096)
@@ -198,5 +200,3 @@ func handleTCPConn(ctx context.Context, conn net.Conn, addr string, port uint16,
 
 	conn.Write(resp)
 }
-
-
