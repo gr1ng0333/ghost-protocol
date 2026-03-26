@@ -86,8 +86,8 @@ func TestAutoEnabled_MediumByteRate(t *testing.T) {
 
 func TestBoundary_ExactlyAtBulkThreshold(t *testing.T) {
 	s := NewAdaptiveSelector(ModeStealth, true)
-	// byteRate exactly at bulkThreshold (1MB/s) — > is strict, so should be Balanced
-	got := s.Select(1024*1024, 1)
+	// byteRate exactly at bulkThreshold (200KB/s) — > is strict, so should be Balanced
+	got := s.Select(200*1024, 1)
 	if got != ModeBalanced {
 		t.Errorf("Select at exact bulkThreshold: got %d, want ModeBalanced(%d)", got, ModeBalanced)
 	}

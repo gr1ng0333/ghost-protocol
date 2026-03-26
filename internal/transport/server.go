@@ -306,6 +306,20 @@ func (p *serverStatsProvider) TotalBytesSent() uint64 { return p.bytesSent.Load(
 // TotalBytesRecv returns the total bytes received from clients.
 func (p *serverStatsProvider) TotalBytesRecv() uint64 { return p.bytesRecv.Load() }
 
+// countingWriter wraps an io.Writer to update an atomic counter on each Write.
+type countingWriter struct {
+	w     io.Writer
+	count *atomic.Uint64
+}
+
+func (cw *countingWriter) Write(p []byte) (int, error) {
+	n, err := cw.w.Write(p)
+	if n > 0 {
+		cw.count.Add(uint64(n))
+	}
+	return n, err
+}
+
 // Addr returns the listener's address, or nil if not yet listening.
 func (s *ghostServer) Addr() net.Addr {
 	s.mu.Lock()
@@ -610,8 +624,8 @@ func (s *ghostServer) handleStream(ctx context.Context, stream mux.Stream, dest 
 	// Bidirectional copy.
 	done := make(chan struct{})
 	go func() {
-		n, _ := io.Copy(target, stream) // client → destination
-		stats.bytesRecv.Add(uint64(n))
+		n, _ := io.Copy(&countingWriter{w: target, count: &stats.bytesRecv}, stream) // client → destination
+		_ = n
 		if s.sessionMgr != nil {
 			s.sessionMgr.Touch(sessionID)
 		}
@@ -621,8 +635,8 @@ func (s *ghostServer) handleStream(ctx context.Context, stream mux.Stream, dest 
 		close(done)
 	}()
 
-	n, _ := io.Copy(stream, target) // destination → client
-	stats.bytesSent.Add(uint64(n))
+	n, _ := io.Copy(&countingWriter{w: stream, count: &stats.bytesSent}, target) // destination → client
+	_ = n
 	if s.sessionMgr != nil {
 		s.sessionMgr.Touch(sessionID)
 	}

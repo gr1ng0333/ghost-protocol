@@ -20,8 +20,8 @@ func NewAdaptiveSelector(defaultMode Mode, autoMode bool) *AdaptiveSelector {
 	return &AdaptiveSelector{
 		defaultMode:   defaultMode,
 		autoMode:      autoMode,
-		bulkThreshold: 1024 * 1024, // 1 MB/s
-		idleThreshold: 10 * 1024,   // 10 KB/s
+		bulkThreshold: 200 * 1024, // 200 KB/s — reachable in balanced mode
+		idleThreshold: 10 * 1024,  // 10 KB/s
 	}
 }
 
