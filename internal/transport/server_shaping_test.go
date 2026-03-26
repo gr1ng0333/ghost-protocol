@@ -202,7 +202,7 @@ func TestGhostHandler_TouchOnActivity(t *testing.T) {
 	downR, downW := io.Pipe()
 	defer func() { upR.Close(); upW.Close(); downR.Close(); downW.Close() }()
 
-	handler := newGhostHandler(sa, sharedSecret, binding, upW, downR, "/api/upload", "/api/download")
+	handler := newGhostHandler(sa, sharedSecret, binding, upW, downR, "/api/upload", "/api/download", "")
 	handler.sessionMgr = sm
 	handler.sessionID = "touch-test"
 

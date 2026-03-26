@@ -630,7 +630,7 @@ func TestServer_AuthenticatedHTTP2Handler(t *testing.T) {
 		}
 
 		h2srv := &http2.Server{}
-		handler := newGhostHandler(sa, sharedSecret, binding, upW, downR, "/api/upload", "/api/download")
+		handler := newGhostHandler(sa, sharedSecret, binding, upW, downR, "/api/upload", "/api/download", "")
 		h2srv.ServeConn(tlsConn, &http2.ServeConnOpts{Handler: handler})
 	}()
 

@@ -59,6 +59,20 @@ func (c *testConn) Recv(ctx context.Context, path string) (io.ReadCloser, error)
 func (c *testConn) Close() error { return c.rawConn.Close() }
 func (c *testConn) Alive() bool  { return true }
 
+func (c *testConn) SendStream(ctx context.Context, path string, body io.Reader) (io.ReadCloser, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set("X-Session-Token", c.token)
+	resp, err := c.h2cc.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Body, nil
+}
+
 // testDialGhost connects to a Ghost server using uTLS with InsecureSkipVerify,
 // injects the SessionID, derives the session token via EKM, and returns a Conn.
 // Follows the same pattern as authTestConn but returns a Conn interface.

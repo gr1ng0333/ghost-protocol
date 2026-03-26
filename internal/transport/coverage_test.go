@@ -320,20 +320,16 @@ func TestH2Conn_CloseAndAlive(t *testing.T) {
 }
 
 func TestH2Conn_Alive_Healthy(t *testing.T) {
-	// Use a raw TCP pair to test Alive without HTTP/2 interference.
-	client, server := tcpPair(t)
-	defer server.Close()
-	defer client.Close()
+	conn, cleanup := newH2TestConn(t)
+	defer cleanup()
 
-	conn := &h2Conn{rawConn: client}
 	if !conn.Alive() {
 		t.Error("Alive() = false on open connection")
 	}
 
-	server.Close()
-	time.Sleep(50 * time.Millisecond) // FIN propagation time
+	conn.Close()
 	if conn.Alive() {
-		t.Error("Alive() = true after remote close")
+		t.Error("Alive() = true after close")
 	}
 }
 

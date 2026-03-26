@@ -30,7 +30,7 @@ func testHandlerSetup(t *testing.T) (handler *ghostHandler, token string, upR *i
 		downW.Close()
 	})
 
-	handler = newGhostHandler(sa, sharedSecret, binding, upW, downR, "/api/upload", "/api/download")
+	handler = newGhostHandler(sa, sharedSecret, binding, upW, downR, "/api/upload", "/api/download", "")
 	token = auth.DeriveSessionToken(sharedSecret, binding)
 	return
 }

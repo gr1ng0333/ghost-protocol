@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"log/slog"
 	"time"
 
 	"ghost/internal/framing"
@@ -49,12 +50,19 @@ type PipelineWrap struct {
 	WrapReader func(framing.FrameReader) framing.FrameReader
 }
 
+// streamConn is an optional extension of PipelineConn that supports
+// streaming upload via a long-lived POST with an io.Reader body.
+type streamConn interface {
+	SendStream(ctx context.Context, path string, body io.Reader) (io.ReadCloser, error)
+}
+
 // ClientPipeline holds a client mux connected to a transport connection.
 type ClientPipeline struct {
 	// Mux is the client-side multiplexer for opening streams.
 	Mux        ClientMux
 	conn       PipelineConn
 	downstream io.ReadCloser
+	streamPW   *io.PipeWriter // non-nil when using streaming upload
 }
 
 // NewClientPipeline creates a ClientMux wired to the transport connection.
@@ -69,10 +77,29 @@ func NewClientPipeline(ctx context.Context, conn PipelineConn, uploadPath, downl
 		return nil, fmt.Errorf("mux.NewClientPipeline: downstream: %w", err)
 	}
 
-	upstream := &postWriter{
-		conn: conn,
-		path: uploadPath,
-		ctx:  ctx,
+	// Try streaming upload if the connection supports it.
+	var upstream io.Writer
+	var streamPW *io.PipeWriter
+	if sc, ok := conn.(streamConn); ok {
+		streamPath := DeriveStreamUploadPath(uploadPath)
+		pr, pw := io.Pipe()
+		streamPW = pw
+		go func() {
+			rc, err := sc.SendStream(ctx, streamPath, pr)
+			if err != nil {
+				slog.Warn("mux: streaming upload failed", "err", err)
+				pw.CloseWithError(fmt.Errorf("stream upload: %w", err))
+				return
+			}
+			// Block until the server closes the response (POST lifetime).
+			if rc != nil {
+				io.Copy(io.Discard, rc)
+				rc.Close()
+			}
+		}()
+		upstream = pw
+	} else {
+		upstream = &postWriter{conn: conn, path: uploadPath, ctx: ctx}
 	}
 
 	// Build FrameWriter chain: mux → [padder →] encoder → transport
@@ -93,6 +120,7 @@ func NewClientPipeline(ctx context.Context, conn PipelineConn, uploadPath, downl
 		Mux:        mx,
 		conn:       conn,
 		downstream: downstream,
+		streamPW:   streamPW,
 	}, nil
 }
 
@@ -100,6 +128,9 @@ func NewClientPipeline(ctx context.Context, conn PipelineConn, uploadPath, downl
 func (p *ClientPipeline) Close() error {
 	p.Mux.Close()
 	p.downstream.Close()
+	if p.streamPW != nil {
+		p.streamPW.Close()
+	}
 	return p.conn.Close()
 }
 
@@ -117,4 +148,11 @@ func DerivePaths(sharedSecret [32]byte) (uploadPath, downloadPath string) {
 	downloadPath = "/api/" + hex.EncodeToString(downMAC.Sum(nil)[:8])
 
 	return uploadPath, downloadPath
+}
+
+// DeriveStreamUploadPath computes the streaming upload path deterministically
+// from the per-frame upload path. Both client and server derive the same value.
+func DeriveStreamUploadPath(uploadPath string) string {
+	h := sha256.Sum256([]byte("ghost-stream-" + uploadPath))
+	return "/api/" + hex.EncodeToString(h[:8])
 }

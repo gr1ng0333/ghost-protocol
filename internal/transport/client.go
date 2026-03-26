@@ -87,6 +87,26 @@ func (c *h2Conn) Recv(ctx context.Context, path string) (io.ReadCloser, error) {
 	return resp.Body, nil
 }
 
+// SendStream opens a long-lived POST with a streaming body.
+// Data written to body is sent continuously as HTTP/2 DATA frames.
+// The request completes when body returns io.EOF.
+func (c *h2Conn) SendStream(ctx context.Context, path string, body io.Reader) (io.ReadCloser, error) {
+	url := c.baseURL + path
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, body)
+	if err != nil {
+		return nil, fmt.Errorf("transport.SendStream: build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set("X-Session-Token", c.token)
+	req.Header[http.PHeaderOrderKey] = c.pho
+
+	resp, err := c.cc.RoundTrip(req)
+	if err != nil {
+		return nil, fmt.Errorf("transport.SendStream: round trip: %w", err)
+	}
+	return resp.Body, nil
+}
+
 func (c *h2Conn) Close() error {
 	ccErr := c.cc.Close()
 	rawErr := c.rawConn.Close()
@@ -100,24 +120,14 @@ func (c *h2Conn) Close() error {
 }
 
 func (c *h2Conn) Alive() bool {
-	// Attempt a zero-length read with an immediate deadline to probe connection health.
-	one := make([]byte, 1)
-	if err := c.rawConn.SetReadDeadline(time.Now().Add(time.Millisecond)); err != nil {
+	// Use the HTTP/2 ClientConn's own health state instead of probing the raw
+	// connection.  A raw Read+SetReadDeadline races with the HTTP/2 framer's
+	// concurrent reads on the same net.Conn, corrupting the framing layer and
+	// killing the connection on every health-check cycle.
+	if c.cc == nil {
 		return false
 	}
-	_, err := c.rawConn.Read(one)
-	// Reset the deadline so future I/O is unaffected.
-	_ = c.rawConn.SetReadDeadline(time.Time{})
-	if err == nil {
-		// Unexpected data — connection may be in odd state but is alive.
-		return true
-	}
-	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-		// Timeout on zero-deadline read means the connection is alive and idle.
-		return true
-	}
-	// Any other error (EOF, connection reset, etc.) means dead.
-	return false
+	return c.cc.CanTakeNewRequest()
 }
 
 // h2Dialer implements Dialer using uTLS + fhttp/http2.

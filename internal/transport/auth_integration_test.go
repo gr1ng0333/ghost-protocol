@@ -460,7 +460,7 @@ func TestAuth_EndToEnd_ChannelBinding(t *testing.T) {
 			downW.Write([]byte("channel-binding-ok"))
 			downW.Close()
 		}()
-		handler := newGhostHandler(sa, sharedSecret, b, upW, downR, "/api/v1/sync", "/api/v1/poll")
+		handler := newGhostHandler(sa, sharedSecret, b, upW, downR, "/api/v1/sync", "/api/v1/poll", "")
 		h2srv.ServeConn(tlsConn, &http2.ServeConnOpts{Handler: handler})
 	}()
 
