@@ -485,6 +485,7 @@ func (s *ghostServer) handleGhost(ctx context.Context, conn *peekConn, chi *clie
 
 	var timerWriter *shaping.TimerFrameWriter
 	var selector *shaping.AdaptiveSelector
+	var clientMode atomic.Int32 // shared between handler and padder; 0=not set, mode+1 otherwise
 
 	if s.profile != nil {
 		// Per-session shaping: fresh padder/timer/selector per connection.
@@ -493,7 +494,17 @@ func (s *ghostServer) handleGhost(ctx context.Context, conn *peekConn, chi *clie
 		timer := shaping.NewProfileTimer(s.profile, seed+1)
 		selector = shaping.NewAdaptiveSelector(s.shapingMode, s.autoMode)
 
-		padWriter := &shaping.PadderFrameWriter{Padder: padder, Next: writer}
+		padWriter := &shaping.PadderFrameWriter{
+			Padder: padder,
+			Next:   writer,
+			GetMode: func() shaping.Mode {
+				// Prefer client-signaled mode for padding decisions.
+				if v := clientMode.Load(); v > 0 {
+					return shaping.Mode(v - 1)
+				}
+				return selector.CurrentMode()
+			},
+		}
 		timerWriter = &shaping.TimerFrameWriter{
 			Timer: timer, Selector: selector, Next: padWriter,
 		}
@@ -555,6 +566,7 @@ func (s *ghostServer) handleGhost(ctx context.Context, conn *peekConn, chi *clie
 	handler := newGhostHandler(s.serverAuth, sharedSecret, binding, upW, downPipe, uploadPath, downloadPath, streamUploadPath)
 	handler.sessionMgr = s.sessionMgr
 	handler.sessionID = sessionID
+	handler.clientMode = &clientMode
 
 	// Start stream dispatch loop.
 	go s.dispatchStreams(ctx, serverMux, stats, sessionID)

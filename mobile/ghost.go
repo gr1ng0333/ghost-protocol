@@ -291,6 +291,7 @@ func Start(fd int, configJSON string) (*Client, error) {
 	// is protected via VpnService.protect() before connect().
 	h2cfg := transport.DefaultChromeH2Config()
 	h2cfg.NetDialer = protectedDialer()
+	h2cfg.ShapingMode = cfg.ShapingMode
 	dialer := transport.NewDialer(h2cfg, clientAuth)
 
 	// 7. Load shaping profile
@@ -317,7 +318,7 @@ func Start(fd int, configJSON string) (*Client, error) {
 
 		wrap = &mux.PipelineWrap{
 			WrapWriter: func(w framing.FrameWriter) framing.FrameWriter {
-				padded := &shaping.PadderFrameWriter{Padder: padder, Next: w}
+				padded := &shaping.PadderFrameWriter{Padder: padder, Next: w, GetMode: sel.CurrentMode}
 				timerWriter = &shaping.TimerFrameWriter{
 					Timer: timer, Selector: selProxy, Next: padded,
 				}

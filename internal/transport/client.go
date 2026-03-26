@@ -47,11 +47,12 @@ type Dialer interface {
 
 // h2Conn wraps an http2.ClientConn and its underlying net.Conn.
 type h2Conn struct {
-	cc      *http2.ClientConn
-	rawConn net.Conn
-	baseURL string   // "https://{sni}"
-	pho     []string // pseudo-header order
-	token   string   // session token for X-Session-Token header
+	cc          *http2.ClientConn
+	rawConn     net.Conn
+	baseURL     string   // "https://{sni}"
+	pho         []string // pseudo-header order
+	token       string   // session token for X-Session-Token header
+	shapingMode string   // shaping mode to signal to server (optional)
 }
 
 func (c *h2Conn) Send(ctx context.Context, path string, payload []byte) (io.ReadCloser, error) {
@@ -62,6 +63,9 @@ func (c *h2Conn) Send(ctx context.Context, path string, payload []byte) (io.Read
 	}
 	req.Header.Set("Content-Type", "application/octet-stream")
 	req.Header.Set("X-Session-Token", c.token)
+	if c.shapingMode != "" {
+		req.Header.Set("X-Ghost-Mode", c.shapingMode)
+	}
 	req.Header[http.PHeaderOrderKey] = c.pho
 
 	resp, err := c.cc.RoundTrip(req)
@@ -78,6 +82,9 @@ func (c *h2Conn) Recv(ctx context.Context, path string) (io.ReadCloser, error) {
 		return nil, fmt.Errorf("transport.Recv: build request: %w", err)
 	}
 	req.Header.Set("X-Session-Token", c.token)
+	if c.shapingMode != "" {
+		req.Header.Set("X-Ghost-Mode", c.shapingMode)
+	}
 	req.Header[http.PHeaderOrderKey] = c.pho
 
 	resp, err := c.cc.RoundTrip(req)
@@ -98,6 +105,9 @@ func (c *h2Conn) SendStream(ctx context.Context, path string, body io.Reader) (i
 	}
 	req.Header.Set("Content-Type", "application/octet-stream")
 	req.Header.Set("X-Session-Token", c.token)
+	if c.shapingMode != "" {
+		req.Header.Set("X-Ghost-Mode", c.shapingMode)
+	}
 	req.Header[http.PHeaderOrderKey] = c.pho
 
 	resp, err := c.cc.RoundTrip(req)
@@ -260,10 +270,11 @@ func (d *h2Dialer) Dial(ctx context.Context, addr, sni string) (Conn, error) {
 	slog.Debug("transport.Dial: HTTP/2 connection established", "addr", addr, "sni", sni)
 
 	return &h2Conn{
-		cc:      cc,
-		rawConn: uconn,
-		baseURL: "https://" + sni,
-		pho:     d.cfg.PseudoHeaderOrder,
-		token:   token,
+		cc:          cc,
+		rawConn:     uconn,
+		baseURL:     "https://" + sni,
+		pho:         d.cfg.PseudoHeaderOrder,
+		token:       token,
+		shapingMode: d.cfg.ShapingMode,
 	}, nil
 }

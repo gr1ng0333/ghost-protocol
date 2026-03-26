@@ -2,10 +2,12 @@ package transport
 
 import (
 	"ghost/internal/auth"
+	"ghost/internal/shaping"
 	"io"
 	"log/slog"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -26,6 +28,9 @@ type ghostHandler struct {
 
 	sessionMgr *SessionManager // optional session lifecycle manager
 	sessionID  string          // session ID for touch tracking
+
+	clientMode *atomic.Int32 // if non-nil, stores client-signaled mode+1 (0=not set)
+	modeOnce   sync.Once     // ensures mode is read only once
 }
 
 // newGhostHandler creates an HTTP/2 handler wired to the mux pipes.
@@ -57,6 +62,18 @@ func (h *ghostHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Touch session on each HTTP activity.
 	if h.sessionMgr != nil {
 		h.sessionMgr.Touch(h.sessionID)
+	}
+
+	// Apply client-requested shaping mode (once per session).
+	if h.clientMode != nil {
+		h.modeOnce.Do(func() {
+			if modeStr := r.Header.Get("X-Ghost-Mode"); modeStr != "" {
+				if mode, ok := shaping.ParseMode(modeStr); ok {
+					h.clientMode.Store(int32(mode) + 1)
+					slog.Debug("ghost: client requested shaping mode", "mode", modeStr)
+				}
+			}
+		})
 	}
 
 	// Route by method and derived path.

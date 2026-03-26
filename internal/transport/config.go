@@ -19,6 +19,10 @@ type H2Config struct {
 	// If nil a zero-value net.Dialer is used (default behaviour, unchanged for
 	// non-Android builds).
 	NetDialer *net.Dialer
+
+	// ShapingMode, when non-empty, is sent as X-Ghost-Mode header to signal
+	// the client's desired shaping mode to the server.
+	ShapingMode string
 }
 
 // DefaultChromeH2Config returns H2Config matching Chrome 146.

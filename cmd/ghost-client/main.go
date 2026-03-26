@@ -68,7 +68,9 @@ func main() {
 	}
 
 	// Create transport dialer and connect.
-	dialer := transport.NewDialer(transport.DefaultChromeH2Config(), clientAuth)
+	h2Cfg := transport.DefaultChromeH2Config()
+	h2Cfg.ShapingMode = cfg.Shaping.DefaultMode
+	dialer := transport.NewDialer(h2Cfg, clientAuth)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -91,7 +93,7 @@ func main() {
 
 		wrap = &mux.PipelineWrap{
 			WrapWriter: func(w framing.FrameWriter) framing.FrameWriter {
-				padded := &shaping.PadderFrameWriter{Padder: padder, Next: w}
+				padded := &shaping.PadderFrameWriter{Padder: padder, Next: w, GetMode: selector.CurrentMode}
 				timerWriter = &shaping.TimerFrameWriter{
 					Timer: timer, Selector: selector, Next: padded,
 				}

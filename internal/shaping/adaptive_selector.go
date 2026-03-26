@@ -1,5 +1,7 @@
 package shaping
 
+import "sync/atomic"
+
 // AdaptiveSelector chooses the shaping mode based on current traffic
 // characteristics. In auto mode, it dynamically switches between
 // Stealth, Balanced, and Performance based on byte rate and stream count.
@@ -11,43 +13,53 @@ type AdaptiveSelector struct {
 	// Thresholds for automatic mode selection (bytes per second).
 	bulkThreshold int64 // above this → Performance (default: 1MB/s)
 	idleThreshold int64 // below this → Stealth (default: 10KB/s)
+
+	// lastMode caches the most recently computed mode so that components
+	// like PadderFrameWriter can query it without calling Select().
+	lastMode atomic.Int32
 }
 
 // NewAdaptiveSelector creates an AdaptiveSelector.
 // defaultMode is used when autoMode is false.
 // autoMode enables dynamic mode switching based on traffic.
 func NewAdaptiveSelector(defaultMode Mode, autoMode bool) *AdaptiveSelector {
-	return &AdaptiveSelector{
+	s := &AdaptiveSelector{
 		defaultMode:   defaultMode,
 		autoMode:      autoMode,
 		bulkThreshold: 200 * 1024, // 200 KB/s — reachable in balanced mode
 		idleThreshold: 10 * 1024,  // 10 KB/s
 	}
+	s.lastMode.Store(int32(defaultMode))
+	return s
 }
 
 // Select returns the appropriate Mode for current traffic.
 func (s *AdaptiveSelector) Select(byteRate int64, streamCount int) Mode {
 	if !s.autoMode {
+		s.lastMode.Store(int32(s.defaultMode))
 		return s.defaultMode
 	}
 
-	// No active streams → full stealth.
-	if streamCount == 0 {
-		return ModeStealth
+	var mode Mode
+	switch {
+	case streamCount == 0:
+		mode = ModeStealth
+	case byteRate > s.bulkThreshold:
+		mode = ModePerformance
+	case byteRate < s.idleThreshold:
+		mode = ModeStealth
+	default:
+		mode = ModeBalanced
 	}
 
-	// High throughput → bypass shaping for performance.
-	if byteRate > s.bulkThreshold {
-		return ModePerformance
-	}
+	s.lastMode.Store(int32(mode))
+	return mode
+}
 
-	// Low throughput → full stealth.
-	if byteRate < s.idleThreshold {
-		return ModeStealth
-	}
-
-	// Moderate throughput → balanced.
-	return ModeBalanced
+// CurrentMode returns the last mode computed by Select, safe for
+// concurrent readers like PadderFrameWriter.
+func (s *AdaptiveSelector) CurrentMode() Mode {
+	return Mode(s.lastMode.Load())
 }
 
 // SetThresholds configures the byte-rate thresholds for mode switching.

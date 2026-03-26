@@ -185,13 +185,30 @@ func parseProfile(data []byte) (*Profile, error) {
 
 // PadderFrameWriter wraps a Padder and a downstream FrameWriter.
 // Each WriteFrame call pads the frame and forwards the result(s) to Next.
+// When GetMode is set and returns ModePerformance, padding is bypassed
+// for zero-overhead throughput.
 type PadderFrameWriter struct {
-	Padder Padder
-	Next   framing.FrameWriter
+	Padder  Padder
+	Next    framing.FrameWriter
+	GetMode func() Mode // optional; skip padding when ModePerformance
 }
 
 // WriteFrame pads the frame and writes all resulting frames to Next.
+// In Performance mode (when GetMode is set), the frame passes through
+// directly with no padding or noise injection.
+// In Balanced mode, frames are padded (resized) but noise injection is skipped.
 func (pw *PadderFrameWriter) WriteFrame(f *framing.Frame) error {
+	if pw.GetMode != nil {
+		switch pw.GetMode() {
+		case ModePerformance:
+			return pw.Next.WriteFrame(f)
+		case ModeBalanced:
+			// Pad frame sizes but skip noise injection.
+			frames := pw.Padder.Pad(f)
+			return pw.Next.WriteFrame(frames[len(frames)-1])
+		}
+	}
+	// Stealth or no mode set: full padding + noise injection.
 	frames := pw.Padder.Pad(f)
 	for _, pf := range frames {
 		if err := pw.Next.WriteFrame(pf); err != nil {
