@@ -136,36 +136,58 @@ func (h *ghostHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	buf := make([]byte, 32*1024)
+	buf := make([]byte, 64*1024)
+	done := make(chan struct{})
 
-	// Flush goroutine: flushes at most every 5ms for batching.
-	flushMu := &sync.Mutex{}
+	// Background flush goroutine: ensures buffered data is pushed to the
+	// client even when the read loop blocks waiting for more data.
+	// Uses a mutex because http2 ResponseWriter requires synchronized access.
+	var mu sync.Mutex
 	go func() {
-		ticker := time.NewTicker(5 * time.Millisecond)
+		ticker := time.NewTicker(2 * time.Millisecond)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-r.Context().Done():
+			case <-done:
 				return
 			case <-ticker.C:
-				flushMu.Lock()
+				mu.Lock()
 				flusher.Flush()
-				flushMu.Unlock()
+				mu.Unlock()
 			}
 		}
 	}()
 
+	const flushThreshold = 16 * 1024
+	pending := 0
+
 	for {
 		n, err := h.downR.Read(buf)
 		if n > 0 {
-			flushMu.Lock()
+			mu.Lock()
 			_, werr := w.Write(buf[:n])
-			flushMu.Unlock()
+			mu.Unlock()
 			if werr != nil {
+				close(done)
 				return // client disconnected
+			}
+			pending += n
+
+			// Eagerly flush when enough data has accumulated.
+			if pending >= flushThreshold {
+				mu.Lock()
+				flusher.Flush()
+				mu.Unlock()
+				pending = 0
 			}
 		}
 		if err != nil {
+			if pending > 0 {
+				mu.Lock()
+				flusher.Flush()
+				mu.Unlock()
+			}
+			close(done)
 			return // pipe closed or error
 		}
 	}

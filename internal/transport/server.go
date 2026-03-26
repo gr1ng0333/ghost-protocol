@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/ecdsa"
@@ -289,6 +290,22 @@ func (s *ghostServer) SetCertManager(cm *CertManager) {
 	s.tlsConfig = cm.TLSConfig()
 }
 
+// flushEncoderWriter wraps an Encoder and a bufio.Writer. After encoding a
+// frame (which may produce multiple small writes for header, payload, and
+// padding), it flushes the buffer so the entire frame reaches the underlying
+// writer (buffered pipe) in a single write, reducing mutex acquisitions.
+type flushEncoderWriter struct {
+	enc framing.Encoder
+	buf *bufio.Writer
+}
+
+func (fw *flushEncoderWriter) WriteFrame(f *framing.Frame) error {
+	if err := fw.enc.Encode(f); err != nil {
+		return err
+	}
+	return fw.buf.Flush()
+}
+
 // serverStatsProvider tracks per-session mux statistics for the shaping
 // subsystem. It satisfies shaping.MuxStatsProvider.
 type serverStatsProvider struct {
@@ -477,10 +494,16 @@ func (s *ghostServer) handleGhost(ctx context.Context, conn *peekConn, chi *clie
 
 	// Create pipes for mux ↔ handler communication.
 	upR, upW := io.Pipe()
-	downPipe := mux.NewBufferedPipe(2 << 20) // 2MB buffer for download throughput
+	downPipe := mux.NewBufferedPipe(4 << 20) // 4MB buffer for download throughput
 
 	// Build FrameWriter/FrameReader chain.
-	var writer framing.FrameWriter = &framing.EncoderWriter{Enc: framing.NewEncoder(downPipe)}
+	// Wrap downPipe with bufio.Writer to batch the encoder's per-frame writes
+	// (header + payload + padding) into a single buffered pipe write.
+	downBuf := bufio.NewWriterSize(downPipe, 32*1024)
+	var writer framing.FrameWriter = &flushEncoderWriter{
+		enc: framing.NewEncoder(downBuf),
+		buf: downBuf,
+	}
 	var reader framing.FrameReader = &framing.DecoderReader{Dec: framing.NewDecoder(upR)}
 
 	var timerWriter *shaping.TimerFrameWriter
@@ -596,7 +619,10 @@ func (s *ghostServer) handleGhost(ctx context.Context, conn *peekConn, chi *clie
 	}()
 
 	// Serve HTTP/2 (blocks until connection closes).
-	h2srv := &http2.Server{}
+	h2srv := &http2.Server{
+		MaxUploadBufferPerConnection: 4 << 20, // 4MB connection-level flow control (default ~1MB)
+		MaxUploadBufferPerStream:     2 << 20, // 2MB per-stream flow control (default ~1MB)
+	}
 	h2srv.ServeConn(tlsConn, &http2.ServeConnOpts{
 		Handler: handler,
 	})

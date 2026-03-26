@@ -24,17 +24,21 @@ func main() {
 		url = os.Args[2]
 	}
 
-	dialer, err := proxy.SOCKS5("tcp", proxyAddr, nil, proxy.Direct)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "SOCKS5 dial: %v\n", err)
-		os.Exit(1)
-	}
-
-	client := &http.Client{
-		Timeout: 120 * time.Second,
-		Transport: &http.Transport{
-			Dial: dialer.Dial,
-		},
+	var client *http.Client
+	if proxyAddr == "direct" {
+		client = &http.Client{Timeout: 120 * time.Second}
+	} else {
+		dialer, err := proxy.SOCKS5("tcp", proxyAddr, nil, proxy.Direct)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "SOCKS5 dial: %v\n", err)
+			os.Exit(1)
+		}
+		client = &http.Client{
+			Timeout: 120 * time.Second,
+			Transport: &http.Transport{
+				Dial: dialer.Dial,
+			},
+		}
 	}
 
 	for i := 1; i <= runs; i++ {
