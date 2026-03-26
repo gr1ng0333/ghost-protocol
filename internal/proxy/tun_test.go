@@ -17,7 +17,7 @@ func mockTunnel(_ context.Context, _ string, _ uint16) (Stream, error) {
 }
 
 func TestNewTunDevice_Fields(t *testing.T) {
-	dev := NewTunDevice("ghost0", "10.0.85.1", "1.2.3.4")
+	dev := NewTunDevice("ghost0", "10.0.85.1", "1.2.3.4", "")
 	if dev == nil {
 		t.Fatal("NewTunDevice returned nil")
 	}
@@ -48,14 +48,14 @@ func TestNewTunDevice_Fields(t *testing.T) {
 }
 
 func TestNewTunDevice_Interface(t *testing.T) {
-	var iface TunDevice = NewTunDevice("tun0", "10.0.0.1", "8.8.8.8")
+	var iface TunDevice = NewTunDevice("tun0", "10.0.0.1", "8.8.8.8", "")
 	if iface == nil {
 		t.Fatal("NewTunDevice returned nil")
 	}
 }
 
 func TestTunDevice_StopIdempotent(t *testing.T) {
-	dev := NewTunDevice("ghost0", "10.0.85.1", "1.2.3.4")
+	dev := NewTunDevice("ghost0", "10.0.85.1", "1.2.3.4", "")
 
 	// Stop without Start — should be a no-op, no panic.
 	if err := dev.Stop(); err != nil {
@@ -68,7 +68,7 @@ func TestTunDevice_StopIdempotent(t *testing.T) {
 }
 
 func TestTunDevice_StopBeforeStart(t *testing.T) {
-	dev := NewTunDevice("ghost0", "10.0.85.1", "1.2.3.4")
+	dev := NewTunDevice("ghost0", "10.0.85.1", "1.2.3.4", "")
 
 	// Verify Stop is safe when Start was never called (no stack, no cancel).
 	td := dev.(*tunDevice)
@@ -106,7 +106,7 @@ func hasIPRule(t *testing.T, pref string) bool {
 func TestTun_CreateAndDestroy(t *testing.T) {
 	skipUnlessTUN(t)
 
-	dev := NewTunDevice("ghosttest0", "10.0.85.1", "127.0.0.2")
+	dev := NewTunDevice("ghosttest0", "10.0.85.1", "127.0.0.2", "")
 	t.Cleanup(func() {
 		dev.Stop()
 	})
@@ -134,7 +134,7 @@ func TestTun_CreateAndDestroy(t *testing.T) {
 func TestTun_FullPipeline(t *testing.T) {
 	skipUnlessTUN(t)
 
-	dev := NewTunDevice("ghosttest0", "10.0.85.1", "127.0.0.2")
+	dev := NewTunDevice("ghosttest0", "10.0.85.1", "127.0.0.2", "")
 	t.Cleanup(func() {
 		dev.Stop()
 	})
