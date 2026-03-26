@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.VpnService
 import android.util.Log
+import androidx.core.content.ContextCompat
 
 /**
  * Starts Ghost VPN service after device boot if auto-connect is enabled.
@@ -36,7 +37,7 @@ class BootReceiver : BroadcastReceiver() {
             if (configStore.isConfigured()) {
                 val vpnIntent = Intent(context, GhostVpnService::class.java)
                     .setAction(GhostVpnService.ACTION_CONNECT)
-                context.startForegroundService(vpnIntent)
+                ContextCompat.startForegroundService(context, vpnIntent)
             }
         }
     }

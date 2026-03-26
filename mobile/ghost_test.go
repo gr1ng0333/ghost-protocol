@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"ghost/internal/mux"
+	"ghost/internal/shaping"
 )
 
 // validConfigJSON returns a valid JSON config string for testing.
@@ -554,15 +555,15 @@ func TestDecodeKey_TooLong(t *testing.T) {
 // ──────── SetMode with autoMode ────────
 
 func TestClient_SetMode_WithAutoMode(t *testing.T) {
-	c := &Client{autoMode: true}
+	c := &Client{autoMode: true, selProxy: &selectorProxy{sel: shaping.NewAdaptiveSelector(shaping.ModeBalanced, true)}}
 	c.mode.Store("balanced")
 
 	c.SetMode("stealth")
 	if got := c.mode.Load().(string); got != "stealth" {
 		t.Errorf("mode = %q, want 'stealth'", got)
 	}
-	if c.selector == nil {
-		t.Error("selector is nil after SetMode")
+	if c.selProxy == nil {
+		t.Error("selProxy is nil after SetMode")
 	}
 }
 
@@ -597,8 +598,11 @@ func TestSetupNetstack_Stub(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from stub setupNetstack on non-linux")
 	}
-	if !strings.Contains(err.Error(), "not supported") {
-		t.Errorf("error = %q, want it to contain 'not supported'", err)
+	// On non-Linux: stub returns "not supported".
+	// On Linux: real implementation fails (e.g., bad fd) since we pass nil/0 args.
+	errStr := err.Error()
+	if !strings.Contains(errStr, "not supported") && !strings.Contains(errStr, "fdbased") {
+		t.Errorf("error = %q, want it to contain 'not supported' or 'fdbased'", errStr)
 	}
 }
 

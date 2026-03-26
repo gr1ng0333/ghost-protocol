@@ -232,9 +232,10 @@ type Client struct {
 	stopTun func() // tears down gVisor stack
 
 	// stats bookkeeping
-	started  time.Time
-	selector *shaping.AdaptiveSelector
-	mode     atomic.Value // stores string
+	started     time.Time
+	selProxy    *selectorProxy
+	mode        atomic.Value // stores string
+	getMuxStats func() mux.MuxStats
 
 	// shaping components (kept for mode switching)
 	profile  *shaping.Profile
@@ -300,7 +301,8 @@ func Start(fd int, configJSON string) (*Client, error) {
 
 	// 8. Build shaping components
 	mode := parseMode(cfg.ShapingMode)
-	selector := shaping.NewAdaptiveSelector(mode, cfg.AutoMode)
+	sel := shaping.NewAdaptiveSelector(mode, cfg.AutoMode)
+	selProxy := &selectorProxy{sel: sel}
 	seed := time.Now().UnixNano()
 
 	var (
@@ -317,7 +319,7 @@ func Start(fd int, configJSON string) (*Client, error) {
 			WrapWriter: func(w framing.FrameWriter) framing.FrameWriter {
 				padded := &shaping.PadderFrameWriter{Padder: padder, Next: w}
 				timerWriter = &shaping.TimerFrameWriter{
-					Timer: timer, Selector: selector, Next: padded,
+					Timer: timer, Selector: selProxy, Next: padded,
 				}
 				wrappedWriter = timerWriter
 				return timerWriter
@@ -331,6 +333,10 @@ func Start(fd int, configJSON string) (*Client, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
+	// getMuxStats will be set by PostConnect when a pipeline connects.
+	var muxStatsMu sync.Mutex
+	var getMuxStats func() mux.MuxStats
+
 	// 9. Create ConnManager
 	mgr := proxy.NewConnManager(proxy.ConnManagerConfig{
 		Dialer:     dialer,
@@ -340,12 +346,16 @@ func Start(fd int, configJSON string) (*Client, error) {
 			Wrap:         wrap,
 			SharedSecret: sharedSecret,
 			PostConnect: func(p *mux.ClientPipeline) (cleanup func()) {
+				muxStatsMu.Lock()
+				getMuxStats = p.Mux.Stats
+				muxStatsMu.Unlock()
+
 				if wrappedWriter == nil || profile == nil {
 					return nil
 				}
 				pCtx, pCancel := context.WithCancel(ctx)
 
-				cover := shaping.NewCoverGenerator(wrappedWriter, selector, profile, time.Now().UnixNano())
+				cover := shaping.NewCoverGenerator(wrappedWriter, selProxy, profile, time.Now().UnixNano())
 				cover.Start(pCtx)
 
 				statsAdapter := &muxStatsAdapter{getMuxStats: p.Mux.Stats}
@@ -356,6 +366,9 @@ func Start(fd int, configJSON string) (*Client, error) {
 				return func() {
 					pCancel()
 					cover.Stop()
+					muxStatsMu.Lock()
+					getMuxStats = nil
+					muxStatsMu.Unlock()
 				}
 			},
 		},
@@ -387,9 +400,18 @@ func Start(fd int, configJSON string) (*Client, error) {
 		tunFile:  tunFile,
 		stopTun:  stopTun,
 		started:  time.Now(),
-		selector: selector,
+		selProxy: selProxy,
 		profile:  profile,
 		autoMode: cfg.AutoMode,
+		getMuxStats: func() mux.MuxStats {
+			muxStatsMu.Lock()
+			fn := getMuxStats
+			muxStatsMu.Unlock()
+			if fn == nil {
+				return mux.MuxStats{}
+			}
+			return fn()
+		},
 	}
 	c.mode.Store(cfg.ShapingMode)
 	if c.mode.Load().(string) == "" {
@@ -454,6 +476,11 @@ func (c *Client) Stats() string {
 		modeStr = m.(string)
 	}
 
+	var ms mux.MuxStats
+	if c.getMuxStats != nil {
+		ms = c.getMuxStats()
+	}
+
 	s := struct {
 		Connected     bool   `json:"connected"`
 		Mode          string `json:"mode"`
@@ -462,9 +489,12 @@ func (c *Client) Stats() string {
 		ActiveStreams int    `json:"active_streams"`
 		UptimeSec     int64  `json:"uptime_sec"`
 	}{
-		Connected: healthy,
-		Mode:      modeStr,
-		UptimeSec: int64(time.Since(started).Seconds()),
+		Connected:     healthy,
+		Mode:          modeStr,
+		BytesSent:     ms.BytesSent,
+		BytesRecv:     ms.BytesRecv,
+		ActiveStreams: ms.ActiveStreams,
+		UptimeSec:     int64(time.Since(started).Seconds()),
 	}
 
 	data, _ := json.Marshal(s)
@@ -476,15 +506,10 @@ func (c *Client) SetMode(mode string) {
 	switch mode {
 	case "stealth", "balanced", "performance":
 		c.mode.Store(mode)
-		// AdaptiveSelector's defaultMode is unexported, so we recreate it.
-		// However the selector is shared by reference in the pipeline, so
-		// we swap the pointer atomically via the Client's selector field.
-		// Since AdaptiveSelector.Select is called on each frame write, the
-		// new mode takes effect on the next frame.
-		newSelector := shaping.NewAdaptiveSelector(parseMode(mode), c.autoMode)
-		c.mu.Lock()
-		c.selector = newSelector
-		c.mu.Unlock()
+		newSel := shaping.NewAdaptiveSelector(parseMode(mode), c.autoMode)
+		if c.selProxy != nil {
+			c.selProxy.swap(newSel)
+		}
 		slog.Info("shaping mode changed", "mode", mode)
 	default:
 		slog.Warn("unknown shaping mode, ignoring", "mode", mode)
@@ -492,6 +517,26 @@ func (c *Client) SetMode(mode string) {
 }
 
 // ──────────────────────── Helpers ─────────────────────────────
+
+// selectorProxy wraps an AdaptiveSelector so that SetMode can swap it
+// without invalidating closures that captured the proxy.
+type selectorProxy struct {
+	mu  sync.RWMutex
+	sel *shaping.AdaptiveSelector
+}
+
+func (p *selectorProxy) Select(byteRate int64, streamCount int) shaping.Mode {
+	p.mu.RLock()
+	s := p.sel
+	p.mu.RUnlock()
+	return s.Select(byteRate, streamCount)
+}
+
+func (p *selectorProxy) swap(s *shaping.AdaptiveSelector) {
+	p.mu.Lock()
+	p.sel = s
+	p.mu.Unlock()
+}
 
 // muxStatsAdapter wraps a ClientMux to satisfy shaping.MuxStatsProvider.
 type muxStatsAdapter struct {

@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
+import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 
@@ -84,7 +85,11 @@ class NetworkMonitor(
     }
 
     fun start() {
-        connectivityManager.registerDefaultNetworkCallback(networkCallback, handler)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            connectivityManager.registerDefaultNetworkCallback(networkCallback, handler)
+        } else {
+            connectivityManager.registerDefaultNetworkCallback(networkCallback)
+        }
     }
 
     fun stop() {

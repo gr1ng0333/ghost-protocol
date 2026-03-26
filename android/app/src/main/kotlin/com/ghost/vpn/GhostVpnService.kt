@@ -8,11 +8,13 @@ import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.net.VpnService
 import android.os.ParcelFileDescriptor
+import android.os.Build
 import android.os.PowerManager
 import android.content.ComponentCallbacks2
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -210,41 +212,13 @@ class GhostVpnService : VpnService() {
         // 5. Load config from ConfigStore
         val configJSON = configStore.toConfigJSON()
 
-        // 6. Set up Go log callback
-        ghost.Ghost.setLogCallback(object : ghost.LogCallback {
-            override fun log(level: String?, message: String?) {
-                Log.d("GhostGo", "[${level ?: "?"} ] ${message ?: ""}")
-            }
-        })
-
-        // 7. Start Ghost
+        // 6. Start Ghost
+        // Log callback is set in MainActivity — do NOT override it here, as that
+        // would disconnect the UI log buffer from Go-side log messages.
         try {
             client = ghost.Ghost.start(fd.toLong(), configJSON)
             isRunning = true
             lastError = null
-            updateNotification(getString(R.string.vpn_connected))
-            registerReceiver(
-                powerReceiver,
-                IntentFilter(PowerManager.ACTION_POWER_SAVE_MODE_CHANGED)
-            )
-
-            // 8. Start network monitor for WiFi↔Mobile transitions
-            networkMonitor = NetworkMonitor(
-                context = this@GhostVpnService,
-                onNetworkChanged = {
-                    Log.i(TAG, "Network changed — ConnManager will detect dead socket and reconnect")
-                    updateNotification(getString(R.string.vpn_connecting))
-                },
-                onNetworkLost = {
-                    Log.w(TAG, "All networks lost — waiting for connectivity")
-                    updateNotification("Waiting for network…")
-                },
-                onCaptivePortal = {
-                    Log.w(TAG, "Captive portal detected — authentication required")
-                }
-            ).also { it.start() }
-
-            Log.i(TAG, "Ghost VPN connected")
         } catch (e: Exception) {
             Log.e(TAG, "Ghost start failed", e)
             lastError = e.message
@@ -257,7 +231,35 @@ class GhostVpnService : VpnService() {
             }
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
+            return@launch
         }
+
+        // 7. Post-start setup (client is running; fd is owned by Go)
+        updateNotification(getString(R.string.vpn_connected))
+        ContextCompat.registerReceiver(
+            this@GhostVpnService,
+            powerReceiver,
+            IntentFilter(PowerManager.ACTION_POWER_SAVE_MODE_CHANGED),
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+
+        // 8. Start network monitor for WiFi↔Mobile transitions
+        networkMonitor = NetworkMonitor(
+            context = this@GhostVpnService,
+            onNetworkChanged = {
+                Log.i(TAG, "Network changed — ConnManager will detect dead socket and reconnect")
+                updateNotification(getString(R.string.vpn_connecting))
+            },
+            onNetworkLost = {
+                Log.w(TAG, "All networks lost — waiting for connectivity")
+                updateNotification("Waiting for network…")
+            },
+            onCaptivePortal = {
+                Log.w(TAG, "Captive portal detected — authentication required")
+            }
+        ).also { it.start() }
+
+        Log.i(TAG, "Ghost VPN connected")
         }
     }
 
