@@ -23,6 +23,7 @@ shaping
 
 # Build/test log files
 vps_*.txt
+ghost-client-err.log
 
 # PowerShell temporary output
 $outfile
@@ -30,3 +31,9 @@ $outfile
 # Production configs (contain secrets)
 configs/client-production.yaml
 configs/server-production.yaml
+configs/client-balanced.yaml
+configs/client-perf.yaml
+configs/client-stealth.yaml
+
+# Local binaries / diagnostics
+ghost-server-diag
