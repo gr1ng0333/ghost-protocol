@@ -5,6 +5,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sync"
+	"time"
 )
 
 // ghostHandler handles HTTP/2 requests for an authenticated Ghost session.
@@ -16,10 +18,11 @@ type ghostHandler struct {
 	binding      []byte // TLS channel binding for token verification
 
 	upW   *io.PipeWriter // POST bodies written here → mux decoder
-	downR *io.PipeReader // mux encoder writes here → GET response
+	downR io.Reader      // mux encoder writes here → GET response
 
-	uploadPath   string // expected POST path
-	downloadPath string // expected GET path
+	uploadPath       string // expected POST path (per-frame)
+	downloadPath     string // expected GET path (streaming)
+	streamUploadPath string // streaming POST path (long-lived)
 
 	sessionMgr *SessionManager // optional session lifecycle manager
 	sessionID  string          // session ID for touch tracking
@@ -28,15 +31,16 @@ type ghostHandler struct {
 // newGhostHandler creates an HTTP/2 handler wired to the mux pipes.
 // upW feeds POST bodies to the ServerMux decoder.
 // downR streams ServerMux encoder output to GET long-poll responses.
-func newGhostHandler(sa auth.ServerAuth, secret [32]byte, binding []byte, upW *io.PipeWriter, downR *io.PipeReader, uploadPath, downloadPath string) *ghostHandler {
+func newGhostHandler(sa auth.ServerAuth, secret [32]byte, binding []byte, upW *io.PipeWriter, downR io.Reader, uploadPath, downloadPath, streamUploadPath string) *ghostHandler {
 	return &ghostHandler{
-		serverAuth:   sa,
-		sharedSecret: secret,
-		binding:      binding,
-		upW:          upW,
-		downR:        downR,
-		uploadPath:   uploadPath,
-		downloadPath: downloadPath,
+		serverAuth:       sa,
+		sharedSecret:     secret,
+		binding:          binding,
+		upW:              upW,
+		downR:            downR,
+		uploadPath:       uploadPath,
+		downloadPath:     downloadPath,
+		streamUploadPath: streamUploadPath,
 	}
 }
 
@@ -57,12 +61,36 @@ func (h *ghostHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Route by method and derived path.
 	switch {
+	case r.Method == http.MethodPost && r.URL.Path == h.streamUploadPath:
+		h.handleStreamUpload(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == h.uploadPath:
 		h.handlePost(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == h.downloadPath:
 		h.handleGet(w, r)
 	default:
 		http.NotFound(w, r)
+	}
+}
+
+// handleStreamUpload handles a long-lived POST where the client streams
+// Ghost frames continuously through the request body. The server responds
+// with 200 OK immediately and then reads frames from the body until the
+// client closes the stream.
+func (h *ghostHandler) handleStreamUpload(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	// Respond immediately so the client's RoundTrip returns.
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	// Read frames from request body until the client closes the stream.
+	_, err := io.Copy(h.upW, r.Body)
+	if err != nil {
+		slog.Warn("ghost: stream upload ended", "err", err, "remote", r.RemoteAddr)
 	}
 }
 
@@ -92,13 +120,33 @@ func (h *ghostHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 	flusher.Flush()
 
 	buf := make([]byte, 32*1024)
+
+	// Flush goroutine: flushes at most every 5ms for batching.
+	flushMu := &sync.Mutex{}
+	go func() {
+		ticker := time.NewTicker(5 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-ticker.C:
+				flushMu.Lock()
+				flusher.Flush()
+				flushMu.Unlock()
+			}
+		}
+	}()
+
 	for {
 		n, err := h.downR.Read(buf)
 		if n > 0 {
-			if _, werr := w.Write(buf[:n]); werr != nil {
+			flushMu.Lock()
+			_, werr := w.Write(buf[:n])
+			flushMu.Unlock()
+			if werr != nil {
 				return // client disconnected
 			}
-			flusher.Flush()
 		}
 		if err != nil {
 			return // pipe closed or error

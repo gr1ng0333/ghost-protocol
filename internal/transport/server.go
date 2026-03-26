@@ -244,7 +244,6 @@ type ghostServer struct {
 	shapingMode shaping.Mode      // default shaping mode
 	autoMode    bool              // auto mode switching
 	listener    net.Listener
-	sessions    chan Session
 	mu          sync.Mutex
 	closed      bool
 	wg          sync.WaitGroup
@@ -264,7 +263,6 @@ func NewServer(cfg *config.ServerConfig, tlsCert tls.Certificate, sa auth.Server
 		},
 		serverAuth: sa,
 		wrap:       wrap,
-		sessions:   make(chan Session, 64),
 	}
 }
 
@@ -281,7 +279,6 @@ func NewServerWithSessions(cfg *config.ServerConfig, tlsConfig *tls.Config, sa a
 		profile:     profile,
 		shapingMode: shapingMode,
 		autoMode:    autoMode,
-		sessions:    make(chan Session, 64),
 	}
 }
 
@@ -379,7 +376,6 @@ func (s *ghostServer) Close() error {
 	}
 
 	s.wg.Wait()
-	close(s.sessions)
 
 	if len(errs) > 0 {
 		return errs[0]
@@ -467,10 +463,10 @@ func (s *ghostServer) handleGhost(ctx context.Context, conn *peekConn, chi *clie
 
 	// Create pipes for mux ↔ handler communication.
 	upR, upW := io.Pipe()
-	downR, downW := io.Pipe()
+	downPipe := mux.NewBufferedPipe(2 << 20) // 2MB buffer for download throughput
 
 	// Build FrameWriter/FrameReader chain.
-	var writer framing.FrameWriter = &framing.EncoderWriter{Enc: framing.NewEncoder(downW)}
+	var writer framing.FrameWriter = &framing.EncoderWriter{Enc: framing.NewEncoder(downPipe)}
 	var reader framing.FrameReader = &framing.DecoderReader{Dec: framing.NewDecoder(upR)}
 
 	var timerWriter *shaping.TimerFrameWriter
@@ -531,8 +527,7 @@ func (s *ghostServer) handleGhost(ctx context.Context, conn *peekConn, chi *clie
 			serverMux.Close()
 			upW.Close()
 			upR.Close()
-			downW.Close()
-			downR.Close()
+			downPipe.Close()
 			slog.Warn("ghost: session rejected", "reason", err, "remote", tlsConn.RemoteAddr())
 			return
 		}
@@ -540,9 +535,10 @@ func (s *ghostServer) handleGhost(ctx context.Context, conn *peekConn, chi *clie
 
 	// Derive per-session paths.
 	uploadPath, downloadPath := mux.DerivePaths(sharedSecret)
+	streamUploadPath := mux.DeriveStreamUploadPath(uploadPath)
 
 	// Create handler wired to pipes.
-	handler := newGhostHandler(s.serverAuth, sharedSecret, binding, upW, downR, uploadPath, downloadPath)
+	handler := newGhostHandler(s.serverAuth, sharedSecret, binding, upW, downPipe, uploadPath, downloadPath, streamUploadPath)
 	handler.sessionMgr = s.sessionMgr
 	handler.sessionID = sessionID
 
@@ -554,25 +550,8 @@ func (s *ghostServer) handleGhost(ctx context.Context, conn *peekConn, chi *clie
 		remoteAddr: conn.RemoteAddr(),
 		serverMux:  serverMux,
 		upW:        upW,
-		downW:      downW,
+		downPipe:   downPipe,
 		done:       make(chan struct{}),
-	}
-
-	select {
-	case s.sessions <- sess:
-	default:
-		slog.Warn("ghost: sessions channel full, dropping connection", "remote", conn.RemoteAddr())
-		if s.sessionMgr != nil {
-			s.sessionMgr.Remove(sessionID)
-		} else {
-			cleanupShaping()
-			serverMux.Close()
-		}
-		upW.Close()
-		upR.Close()
-		downW.Close()
-		downR.Close()
-		return
 	}
 
 	slog.Info("ghost: session established", "remote", conn.RemoteAddr(), "session", truncID(sessionID))
@@ -586,8 +565,7 @@ func (s *ghostServer) handleGhost(ctx context.Context, conn *peekConn, chi *clie
 		}
 		upW.Close()
 		upR.Close()
-		downW.Close()
-		downR.Close()
+		downPipe.Close()
 		sess.Close()
 	}()
 
@@ -736,7 +714,7 @@ type ghostSession struct {
 	remoteAddr net.Addr
 	serverMux  mux.ServerMux
 	upW        *io.PipeWriter
-	downW      *io.PipeWriter
+	downPipe   io.Closer
 	done       chan struct{}
 	closeOnce  sync.Once
 }
