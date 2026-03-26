@@ -113,7 +113,7 @@ func (cg *CoverGenerator) run(ctx context.Context) {
 			cg.mu.Unlock()
 
 			mode := cg.selector.Select(br, sc)
-			if mode == ModeStealth || sc == 0 {
+			if mode != ModePerformance && (mode == ModeStealth || sc == 0) {
 				cg.injectIdleTraffic()
 			}
 

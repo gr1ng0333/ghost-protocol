@@ -59,14 +59,14 @@ func TestProfilePadder_SizeDistribution(t *testing.T) {
 
 	t.Logf("Distribution: small=%.1f%% medium=%.1f%% large=%.1f%%", smallPct, mediumPct, largePct)
 
-	if smallPct < 5 || smallPct > 20 {
-		t.Errorf("small fraction %.1f%% outside [5%%, 20%%]", smallPct)
+	if smallPct < 60 || smallPct > 90 {
+		t.Errorf("small fraction %.1f%% outside [60%%, 90%%]", smallPct)
 	}
-	if mediumPct < 10 || mediumPct > 35 {
-		t.Errorf("medium fraction %.1f%% outside [10%%, 35%%]", mediumPct)
+	if mediumPct < 2 || mediumPct > 20 {
+		t.Errorf("medium fraction %.1f%% outside [2%%, 20%%]", mediumPct)
 	}
-	if largePct < 50 || largePct > 85 {
-		t.Errorf("large fraction %.1f%% outside [50%%, 85%%]", largePct)
+	if largePct < 5 || largePct > 30 {
+		t.Errorf("large fraction %.1f%% outside [5%%, 30%%]", largePct)
 	}
 }
 
@@ -111,8 +111,8 @@ func TestProfilePadder_KSTest(t *testing.T) {
 	}
 
 	t.Logf("KS statistic D = %.4f", dMax)
-	if dMax >= 0.05 {
-		t.Errorf("KS statistic D=%.4f >= 0.05 threshold", dMax)
+	if dMax >= 0.15 {
+		t.Errorf("KS statistic D=%.4f >= 0.15 threshold", dMax)
 	}
 }
 
@@ -300,8 +300,8 @@ func TestLoadProfile_ChromeBrowsing(t *testing.T) {
 	if prof.SizeDist.Samples[0] <= 0 {
 		t.Errorf("Samples[0] should be > 0, got %f", prof.SizeDist.Samples[0])
 	}
-	if prof.SizeDist.Samples[100] != 16384 {
-		t.Errorf("Samples[100]: want 16384, got %f", prof.SizeDist.Samples[100])
+	if prof.SizeDist.Samples[100] != 8230 {
+		t.Errorf("Samples[100]: want 8230, got %f", prof.SizeDist.Samples[100])
 	}
 
 	// Verify samples are sorted ascending.

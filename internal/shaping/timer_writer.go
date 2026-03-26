@@ -23,42 +23,63 @@ type TimerFrameWriter struct {
 	burstFrames int
 }
 
+// maxStealthDelay caps the per-frame delay in Stealth mode to prevent
+// extreme outliers from the heavy-tailed lognormal timing distribution.
+const maxStealthDelay = 50 * time.Millisecond
+
+// maxBalancedDelay caps the per-frame delay in Balanced mode.
+const maxBalancedDelay = 15 * time.Millisecond
+
 // WriteFrame applies timing shaping and forwards the frame to Next.
-// In Performance mode, no delay is applied. Otherwise, the Timer's
-// Delay is applied before writing, and burst boundaries trigger pauses.
+// In Performance mode, no delay is applied (true passthrough).
+// In Balanced mode, delays are reduced to 1/4 and burst pauses to 1/4.
+// In Stealth mode, full delays with a cap to trim heavy-tail outliers.
 func (tw *TimerFrameWriter) WriteFrame(f *framing.Frame) error {
 	tw.mu.Lock()
 	mode := tw.Selector.Select(tw.byteRate, tw.streamCount)
 	tw.mu.Unlock()
 
-	if mode != ModePerformance {
-		frameBytes := len(f.Payload) + len(f.Padding)
+	if mode == ModePerformance {
+		return tw.Next.WriteFrame(f)
+	}
 
-		tw.mu.Lock()
-		tw.burstBytes += frameBytes
-		tw.burstFrames++
-		burstBytes := tw.burstBytes
-		burstFrames := tw.burstFrames
-		tw.mu.Unlock()
+	frameBytes := len(f.Payload) + len(f.Padding)
 
-		delay := tw.Timer.Delay(burstBytes, burstFrames)
+	tw.mu.Lock()
+	tw.burstBytes += frameBytes
+	tw.burstFrames++
+	burstBytes := tw.burstBytes
+	burstFrames := tw.burstFrames
+	tw.mu.Unlock()
+
+	delay := tw.Timer.Delay(burstBytes, burstFrames)
+	switch mode {
+	case ModeBalanced:
+		delay /= 4
+		if delay > maxBalancedDelay {
+			delay = maxBalancedDelay
+		}
+	case ModeStealth:
+		if delay > maxStealthDelay {
+			delay = maxStealthDelay
+		}
+	}
+	if delay > 0 {
+		time.Sleep(delay)
+	}
+
+	if tw.Timer.BurstComplete(burstBytes, burstFrames) {
+		pause := tw.Timer.IdleDuration()
 		if mode == ModeBalanced {
-			delay /= 2
+			pause /= 4
 		}
-		if delay > 0 {
-			time.Sleep(delay)
+		if pause > 0 {
+			time.Sleep(pause)
 		}
-
-		if tw.Timer.BurstComplete(burstBytes, burstFrames) {
-			pause := tw.Timer.IdleDuration()
-			if pause > 0 {
-				time.Sleep(pause)
-			}
-			tw.mu.Lock()
-			tw.burstBytes = 0
-			tw.burstFrames = 0
-			tw.mu.Unlock()
-		}
+		tw.mu.Lock()
+		tw.burstBytes = 0
+		tw.burstFrames = 0
+		tw.mu.Unlock()
 	}
 
 	return tw.Next.WriteFrame(f)
