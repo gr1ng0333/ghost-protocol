@@ -151,11 +151,22 @@ func (m *clientMux) sendFrame(f *framing.Frame) error {
 }
 
 // writeLoop is a goroutine that serializes all encoder.Encode calls.
+// It drains all pending frames from writeCh before yielding, reducing
+// per-frame transport overhead when multiple streams write concurrently.
 func (m *clientMux) writeLoop() {
 	for {
 		select {
 		case req := <-m.writeCh:
 			req.errCh <- m.writer.WriteFrame(req.frame)
+			// Drain any queued frames without blocking to batch writes.
+			for drained := true; drained; {
+				select {
+				case req2 := <-m.writeCh:
+					req2.errCh <- m.writer.WriteFrame(req2.frame)
+				default:
+					drained = false
+				}
+			}
 		case <-m.done:
 			return
 		}

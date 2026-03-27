@@ -237,6 +237,12 @@ type Client struct {
 	mode        atomic.Value // stores string
 	getMuxStats func() mux.MuxStats
 
+	// cumulative byte counters survive across pipeline reconnects.
+	// When a pipeline is replaced (ConnManager reconnect), the old
+	// pipeline's final stats are added here so Stats() never goes backward.
+	cumulBytesSent *atomic.Uint64
+	cumulBytesRecv *atomic.Uint64
+
 	// shaping components (kept for mode switching)
 	profile  *shaping.Profile
 	autoMode bool
@@ -338,6 +344,11 @@ func Start(fd int, configJSON string) (*Client, error) {
 	var muxStatsMu sync.Mutex
 	var getMuxStats func() mux.MuxStats
 
+	// Cumulative byte counters that survive pipeline reconnects.
+	// When a pipeline is replaced, its final stats are added here.
+	cumulBytesSent := &atomic.Uint64{}
+	cumulBytesRecv := &atomic.Uint64{}
+
 	// 9. Create ConnManager
 	mgr := proxy.NewConnManager(proxy.ConnManagerConfig{
 		Dialer:     dialer,
@@ -351,8 +362,19 @@ func Start(fd int, configJSON string) (*Client, error) {
 				getMuxStats = p.Mux.Stats
 				muxStatsMu.Unlock()
 
+				// Always capture final stats on cleanup so cumulative
+				// counters survive pipeline reconnects (Bug 4 fix).
+				captureStats := func() {
+					finalStats := p.Mux.Stats()
+					cumulBytesSent.Add(finalStats.BytesSent)
+					cumulBytesRecv.Add(finalStats.BytesRecv)
+					muxStatsMu.Lock()
+					getMuxStats = nil
+					muxStatsMu.Unlock()
+				}
+
 				if wrappedWriter == nil || profile == nil {
-					return nil
+					return captureStats
 				}
 				pCtx, pCancel := context.WithCancel(ctx)
 
@@ -365,11 +387,9 @@ func Start(fd int, configJSON string) (*Client, error) {
 
 				slog.Info("cover traffic generator started")
 				return func() {
+					captureStats()
 					pCancel()
 					cover.Stop()
-					muxStatsMu.Lock()
-					getMuxStats = nil
-					muxStatsMu.Unlock()
 				}
 			},
 		},
@@ -414,6 +434,9 @@ func Start(fd int, configJSON string) (*Client, error) {
 			return fn()
 		},
 	}
+	// Wire cumulative counters into the Client.
+	c.cumulBytesSent = cumulBytesSent
+	c.cumulBytesRecv = cumulBytesRecv
 	c.mode.Store(cfg.ShapingMode)
 	if c.mode.Load().(string) == "" {
 		c.mode.Store("balanced")
@@ -492,8 +515,8 @@ func (c *Client) Stats() string {
 	}{
 		Connected:     healthy,
 		Mode:          modeStr,
-		BytesSent:     ms.BytesSent,
-		BytesRecv:     ms.BytesRecv,
+		BytesSent:     c.cumulBytesSent.Load() + ms.BytesSent,
+		BytesRecv:     c.cumulBytesRecv.Load() + ms.BytesRecv,
 		ActiveStreams: ms.ActiveStreams,
 		UptimeSec:     int64(time.Since(started).Seconds()),
 	}
@@ -503,11 +526,15 @@ func (c *Client) Stats() string {
 }
 
 // SetMode changes the shaping mode: "stealth", "balanced", "performance".
+// The user's explicit choice disables auto-mode so the selector always
+// returns the requested mode instead of dynamically overriding it based
+// on traffic patterns.
 func (c *Client) SetMode(mode string) {
 	switch mode {
 	case "stealth", "balanced", "performance":
 		c.mode.Store(mode)
-		newSel := shaping.NewAdaptiveSelector(parseMode(mode), c.autoMode)
+		// autoMode=false: respect the user's explicit choice.
+		newSel := shaping.NewAdaptiveSelector(parseMode(mode), false)
 		if c.selProxy != nil {
 			c.selProxy.swap(newSel)
 		}

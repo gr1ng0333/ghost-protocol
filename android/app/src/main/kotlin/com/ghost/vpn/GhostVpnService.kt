@@ -20,6 +20,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
@@ -59,8 +60,8 @@ class GhostVpnService : VpnService() {
     /** Saved mode before battery saver switched us to "performance". */
     private var previousMode: String? = null
 
-    /** Coroutine scope for background work; cancelled in [onDestroy]. */
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    /** Coroutine scope for background work; recreated after cancellation. */
+    private var serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     /** Tracks the in-flight connect coroutine for idempotency. */
     private var connectJob: Job? = null
@@ -120,14 +121,27 @@ class GhostVpnService : VpnService() {
     }
 
     private fun connect() {
-        // Idempotent: skip if a connect is already in progress or tunnel is up.
+        // Idempotent: skip if a connect is already in progress.
         if (connectJob?.isActive == true) {
             Log.d(TAG, "Connect already in progress — ignoring duplicate connect()")
             return
         }
-        if (isRunning && client != null) {
-            Log.d(TAG, "Already connected — ignoring duplicate connect()")
-            return
+
+        // Clean up stale state from a previous connection. After disconnect(),
+        // the service may be reused (stopSelf is async) with leftover state.
+        if (isRunning || client != null) {
+            Log.i(TAG, "Cleaning up stale connection before reconnect")
+            try { client?.stop() } catch (_: Exception) {}
+            client = null
+            isRunning = false
+        }
+
+        // Ensure coroutine scope is active. After onDestroy() cancels it,
+        // a reused service instance (before Android creates a new one) would
+        // silently drop coroutine launches.
+        if (!serviceScope.isActive) {
+            Log.w(TAG, "serviceScope was cancelled — recreating")
+            serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         }
 
         // 0. Verify configuration exists
@@ -289,9 +303,14 @@ class GhostVpnService : VpnService() {
         }
         client = null
         isRunning = false
+        lastError = null
         previousMode = null
         stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+        // Do NOT call stopSelf() here. The service stays alive so the same
+        // serviceScope can be reused for the next connect(). This avoids the
+        // race where onDestroy() cancels serviceScope after stopSelf() but
+        // before Android creates a new instance for the next startService().
+        // The service will be destroyed naturally when the app process dies.
         Log.i(TAG, "Ghost VPN disconnected")
     }
 

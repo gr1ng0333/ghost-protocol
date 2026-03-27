@@ -69,13 +69,19 @@ func setupNetstack(ctx context.Context, tunFile *os.File, mtu uint32, opener pro
 		{Destination: header.IPv6EmptySubnet, NIC: nicID},
 	})
 
-	// TCP buffer tuning
-	rcvOpt := tcpip.TCPReceiveBufferSizeRangeOption{Min: 4096, Default: 212992, Max: 4194304}
+	// TCP buffer tuning — use large buffers for VPN throughput.
+	// Default 212KB is too small for high-bandwidth VPN tunneling.
+	// 4MB max allows TCP windows to scale for both upload and download.
+	rcvOpt := tcpip.TCPReceiveBufferSizeRangeOption{Min: 4096, Default: 2097152, Max: 4194304}
 	s.SetTransportProtocolOption(tcp.ProtocolNumber, &rcvOpt)
-	sndOpt := tcpip.TCPSendBufferSizeRangeOption{Min: 4096, Default: 212992, Max: 4194304}
+	sndOpt := tcpip.TCPSendBufferSizeRangeOption{Min: 4096, Default: 2097152, Max: 4194304}
 	s.SetTransportProtocolOption(tcp.ProtocolNumber, &sndOpt)
 	sackOpt := tcpip.TCPSACKEnabled(true)
 	s.SetTransportProtocolOption(tcp.ProtocolNumber, &sackOpt)
+	// Disable Nagle's algorithm — reduces latency for interactive traffic
+	// and prevents small-packet coalescing that adds delay to upload frames.
+	delayOpt := tcpip.TCPDelayEnabled(false)
+	s.SetTransportProtocolOption(tcp.ProtocolNumber, &delayOpt)
 
 	// TCP forwarder
 	tcpFwd := tcp.NewForwarder(s, 0, 1024, func(r *tcp.ForwarderRequest) {
@@ -144,12 +150,16 @@ func handleTCPConn(ctx context.Context, conn net.Conn, addr string, port uint16,
 
 	slog.Debug("tcp tunnel established", "dst", addr, "port", port, "stream_id", stream.ID())
 
-	// Bidirectional relay
+	// Bidirectional relay with 256KB buffers. The default io.Copy uses 32KB
+	// which causes excessive frame splitting (each 32KB read becomes two
+	// 16KB Ghost frames through the mux writeLoop). 256KB reduces per-frame
+	// overhead and lets the mux batch more data per write cycle.
 	var wg sync.WaitGroup
 	wg.Add(2)
 	cp := func(dst io.Writer, src io.Reader, close func()) {
 		defer wg.Done()
-		io.Copy(dst, src)
+		buf := make([]byte, 256*1024)
+		io.CopyBuffer(dst, src, buf)
 		close()
 	}
 	go cp(conn, stream, func() { conn.Close() })

@@ -62,7 +62,17 @@ type ClientPipeline struct {
 	Mux        ClientMux
 	conn       PipelineConn
 	downstream io.ReadCloser
-	streamPW   *io.PipeWriter // non-nil when using streaming upload
+	streamPW   *io.PipeWriter      // non-nil when using io.Pipe fallback
+	uploadBuf  *bufferedPipeCloser // non-nil when using buffered streaming upload
+}
+
+// bufferedPipeCloser wraps a bufferedPipe to satisfy io.Closer.
+type bufferedPipeCloser struct {
+	bp *bufferedPipe
+}
+
+func (b *bufferedPipeCloser) Close() error {
+	return b.bp.Close()
 }
 
 // NewClientPipeline creates a ClientMux wired to the transport connection.
@@ -80,15 +90,23 @@ func NewClientPipeline(ctx context.Context, conn PipelineConn, uploadPath, downl
 	// Try streaming upload if the connection supports it.
 	var upstream io.Writer
 	var streamPW *io.PipeWriter
+	var uploadBuf *bufferedPipeCloser
 	if sc, ok := conn.(streamConn); ok {
 		streamPath := DeriveStreamUploadPath(uploadPath)
-		pr, pw := io.Pipe()
-		streamPW = pw
+		// Use a 2MB buffered pipe instead of io.Pipe to decouple frame
+		// encoding speed from HTTP/2 DATA frame throughput. io.Pipe is
+		// fully synchronous: each encoder Write blocks until the HTTP/2
+		// reader consumes it. With 3 writes per frame (header, payload,
+		// padding), this creates severe upload bottleneck. The buffered
+		// pipe lets the encoder write at memory speed; the HTTP/2 layer
+		// drains the buffer at wire speed in the background goroutine.
+		bp := NewBufferedPipe(2 * 1024 * 1024)
+		uploadBuf = &bufferedPipeCloser{bp: bp}
 		go func() {
-			rc, err := sc.SendStream(ctx, streamPath, pr)
+			rc, err := sc.SendStream(ctx, streamPath, bp)
 			if err != nil {
 				slog.Warn("mux: streaming upload failed", "err", err)
-				pw.CloseWithError(fmt.Errorf("stream upload: %w", err))
+				bp.CloseWithError(fmt.Errorf("stream upload: %w", err))
 				return
 			}
 			// Block until the server closes the response (POST lifetime).
@@ -97,7 +115,7 @@ func NewClientPipeline(ctx context.Context, conn PipelineConn, uploadPath, downl
 				rc.Close()
 			}
 		}()
-		upstream = pw
+		upstream = bp
 	} else {
 		upstream = &postWriter{conn: conn, path: uploadPath, ctx: ctx}
 	}
@@ -121,6 +139,7 @@ func NewClientPipeline(ctx context.Context, conn PipelineConn, uploadPath, downl
 		conn:       conn,
 		downstream: downstream,
 		streamPW:   streamPW,
+		uploadBuf:  uploadBuf,
 	}, nil
 }
 
@@ -130,6 +149,9 @@ func (p *ClientPipeline) Close() error {
 	p.downstream.Close()
 	if p.streamPW != nil {
 		p.streamPW.Close()
+	}
+	if p.uploadBuf != nil {
+		p.uploadBuf.Close()
 	}
 	return p.conn.Close()
 }

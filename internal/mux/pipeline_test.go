@@ -195,9 +195,9 @@ func TestNewClientPipeline_StreamMode(t *testing.T) {
 		t.Fatalf("NewClientPipeline stream mode: %v", err)
 	}
 
-	// streamPW should be set for streaming upload.
-	if pipeline.streamPW == nil {
-		t.Error("streamPW should be set for streamConn")
+	// uploadBuf should be set for streaming upload (using bufferedPipe).
+	if pipeline.uploadBuf == nil {
+		t.Error("uploadBuf should be set for streamConn")
 	}
 
 	if err := pipeline.Close(); err != nil {
