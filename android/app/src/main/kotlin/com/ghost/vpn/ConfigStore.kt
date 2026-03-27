@@ -152,10 +152,12 @@ class ConfigStore(context: Context) {
                     EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
                 )
                 Pair(encPrefs, false)
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 // ⚠ SECURITY WARNING: Keystore unavailable — key material will be
                 // stored WITHOUT encryption.  This is a last-resort fallback only.
                 // Surface isUsingPlaintextStorage=true in the UI so the user is aware.
+                // Catches Throwable (not just Exception) because Keystore initialization
+                // can throw Error subclasses (NoClassDefFoundError, ExceptionInInitializerError).
                 Log.w(TAG, "⚠ SECURITY: EncryptedSharedPreferences unavailable — " +
                     "falling back to PLAINTEXT storage for key material. " +
                     "The device Keystore may be broken or the app data was migrated.", e)

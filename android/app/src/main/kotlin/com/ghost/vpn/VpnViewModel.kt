@@ -85,6 +85,11 @@ class VpnViewModel : ViewModel() {
      * @param context Android context used to build and send the service Intent.
      */
     fun connect(context: Context) {
+        if (!GhostApp.nativeLoaded) {
+            val err = GhostApp.nativeError ?: "Native library not available"
+            _state.value = VpnState.Error("Cannot connect: $err")
+            return
+        }
         _state.value = VpnState.Connecting
         GhostVpnService.lastError = null
         val intent = Intent(context, GhostVpnService::class.java).apply {

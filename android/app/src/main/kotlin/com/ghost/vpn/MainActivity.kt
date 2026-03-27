@@ -85,21 +85,38 @@ class MainActivity : ComponentActivity() {
     ) { /* proceed regardless */ }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        requestNotificationPermission()
+        try {
+            super.onCreate(savedInstanceState)
+            requestNotificationPermission()
+        } catch (e: Throwable) {
+            android.util.Log.e("GhostVPN", "FATAL: pre-setContent crashed", e)
+            android.widget.Toast.makeText(this, "Crash: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+            return
+        }
         setContent {
             val vm: VpnViewModel = viewModel()
             viewModel = vm
             val configStore = remember { ConfigStore(applicationContext) }
             var showSettings by remember { mutableStateOf(false) }
 
-            // Route Go log messages into ViewModel log buffer
+            // Route Go log messages into ViewModel log buffer.
+            // Guarded: only set callback if native library loaded.
             LaunchedEffect(Unit) {
-                ghost.Ghost.setLogCallback(object : ghost.LogCallback {
-                    override fun log(level: String, message: String) {
-                        vm.addLog(level, message)
+                if (GhostApp.nativeLoaded) {
+                    try {
+                        ghost.Ghost.setLogCallback(object : ghost.LogCallback {
+                            override fun log(level: String, message: String) {
+                                vm.addLog(level, message)
+                            }
+                        })
+                    } catch (e: Throwable) {
+                        android.util.Log.e("GhostVPN", "Failed to set log callback", e)
+                        vm.addLog("ERROR", "Native library error: ${e.message}")
                     }
-                })
+                } else {
+                    val err = GhostApp.nativeError ?: "unknown error"
+                    vm.addLog("ERROR", "Native library not loaded: $err")
+                }
             }
 
             GhostTheme {

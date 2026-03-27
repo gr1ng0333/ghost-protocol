@@ -151,6 +151,17 @@ class GhostVpnService : VpnService() {
 
         // Run blocking VPN setup on an IO coroutine to avoid ANR.
         connectJob = serviceScope.launch {
+        // Check native library before any ghost.* call
+        if (!GhostApp.nativeLoaded) {
+            val err = GhostApp.nativeError ?: "Native library not loaded"
+            Log.e(TAG, "Cannot connect: $err")
+            lastError = "Native library failed to load: $err"
+            isRunning = false
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return@launch
+        }
+
         // Register socket protector so Go transport sockets bypass VPN
         var protectorSet = false
         try {
@@ -160,7 +171,7 @@ class GhostVpnService : VpnService() {
                 }
             })
             protectorSet = true
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.w(TAG, "Failed to set socket protector", e)
         }
 
