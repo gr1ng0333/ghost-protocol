@@ -223,9 +223,8 @@ func TestTimerFrameWriter_BurstCompleteWithPause(t *testing.T) {
 	start := time.Now()
 	for i := 0; i < 3; i++ {
 		if err := tw.WriteFrame(&framing.Frame{
-			Type:     framing.FrameData,
-			StreamID: 1,
-			Payload:  make([]byte, 50),
+			Type:    framing.FramePadding,
+			Padding: make([]byte, 50),
 		}); err != nil {
 			t.Fatalf("WriteFrame[%d]: %v", i, err)
 		}
@@ -267,8 +266,8 @@ func TestTimerFrameWriter_BurstCompleteWithZeroPause(t *testing.T) {
 
 	start := time.Now()
 	if err := tw.WriteFrame(&framing.Frame{
-		Type:    framing.FrameData,
-		Payload: make([]byte, 50),
+		Type:    framing.FramePadding,
+		Padding: make([]byte, 50),
 	}); err != nil {
 		t.Fatalf("WriteFrame: %v", err)
 	}
@@ -295,8 +294,8 @@ func TestTimerFrameWriter_WithDelay(t *testing.T) {
 	start := time.Now()
 	for i := 0; i < 3; i++ {
 		if err := tw.WriteFrame(&framing.Frame{
-			Type:    framing.FrameData,
-			Payload: make([]byte, 50),
+			Type:    framing.FramePadding,
+			Padding: make([]byte, 50),
 		}); err != nil {
 			t.Fatalf("WriteFrame[%d]: %v", i, err)
 		}
@@ -323,7 +322,7 @@ func TestTimerFrameWriter_FrameWithPadding(t *testing.T) {
 	}
 
 	f := &framing.Frame{
-		Type:    framing.FrameData,
+		Type:    framing.FramePadding,
 		Payload: make([]byte, 50),
 		Padding: make([]byte, 30),
 	}
@@ -601,8 +600,8 @@ func TestTimerFrameWriter_StealthMode_NoBurstComplete(t *testing.T) {
 	}
 
 	if err := tw.WriteFrame(&framing.Frame{
-		Type:    framing.FrameData,
-		Payload: make([]byte, 100),
+		Type:    framing.FramePadding,
+		Padding: make([]byte, 100),
 	}); err != nil {
 		t.Fatalf("WriteFrame: %v", err)
 	}

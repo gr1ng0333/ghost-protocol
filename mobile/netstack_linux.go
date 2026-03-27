@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"syscall"
 
 	"ghost/internal/proxy"
 
@@ -32,13 +33,25 @@ import (
 func setupNetstack(ctx context.Context, tunFile *os.File, mtu uint32, opener proxy.StreamOpener) (stop func(), err error) {
 	fd := int(tunFile.Fd())
 
+	// Dup the fd so gVisor owns an independent copy. gVisor's fdbased
+	// endpoint calls unix.Close(fd) during stack teardown (s.Close).
+	// Without dup, tunFile.Close() in Client.Stop() double-closes the
+	// same fd — which may have been recycled by the OS for Go's epoll
+	// fd or a new socket, corrupting the runtime event loop and breaking
+	// all subsequent network I/O (including the next Start() dial).
+	dupFd, err := syscall.Dup(fd)
+	if err != nil {
+		return nil, fmt.Errorf("dup tun fd: %w", err)
+	}
+
 	ep, err := fdbased.New(&fdbased.Options{
-		FDs:                []int{fd},
+		FDs:                []int{dupFd},
 		MTU:                mtu,
 		EthernetHeader:     false,
 		PacketDispatchMode: fdbased.Readv,
 	})
 	if err != nil {
+		syscall.Close(dupFd)
 		return nil, fmt.Errorf("fdbased.New: %w", err)
 	}
 

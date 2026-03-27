@@ -48,6 +48,8 @@ func SetSocketProtector(p SocketProtector) {
 // connection made by the Ghost transport is protected from the VPN tunnel.
 func protectedDialer() *net.Dialer {
 	return &net.Dialer{
+		Timeout:   15 * time.Second,
+		KeepAlive: 15 * time.Second,
 		Control: func(network, address string, c syscall.RawConn) error {
 			if socketProtector == nil {
 				return nil // No protector registered, skip
@@ -456,18 +458,27 @@ func (c *Client) Stop() {
 	}
 
 	c.cancel()
+	c.cancel = nil
 
-	if c.stopTun != nil {
-		c.stopTun()
-	}
+	// Stop transport layer first so mux stream operations fail fast,
+	// unblocking gVisor's handleTCPConn goroutines.
 	if c.mgr != nil {
 		c.mgr.Stop()
-	}
-	if c.tunFile != nil {
-		c.tunFile.Close()
+		c.mgr = nil
 	}
 
-	c.cancel = nil
+	// Close gVisor stack (closes the dup'd fd, not the original).
+	if c.stopTun != nil {
+		c.stopTun()
+		c.stopTun = nil
+	}
+
+	// Close the original TUN fd owned by tunFile.
+	if c.tunFile != nil {
+		c.tunFile.Close()
+		c.tunFile = nil
+	}
+
 	slog.Info("ghost client stopped")
 }
 

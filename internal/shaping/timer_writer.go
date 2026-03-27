@@ -31,10 +31,22 @@ const maxStealthDelay = 50 * time.Millisecond
 const maxBalancedDelay = 15 * time.Millisecond
 
 // WriteFrame applies timing shaping and forwards the frame to Next.
-// In Performance mode, no delay is applied (true passthrough).
-// In Balanced mode, delays are reduced to 1/4 and burst pauses to 1/4.
-// In Stealth mode, full delays with a cap to trim heavy-tail outliers.
+//
+// Data-carrying frames (Data, Open, Close, UDP) pass through without timing
+// delay in ALL modes. The TimerFrameWriter sits on the upload (client→server)
+// path; the Chrome browsing timing profile describes download patterns visible
+// to DPI. Upload from a real browser is sporadic and has no meaningful timing
+// fingerprint. Applying 15-50ms per-frame delays to upload caps throughput at
+// ~1-2.5 Mbps with zero stealth benefit.
+//
+// Cover traffic frames (Padding, KeepAlive) get full timing shaping so idle
+// periods are filled with realistically-timed noise.
 func (tw *TimerFrameWriter) WriteFrame(f *framing.Frame) error {
+	// Fast path: data-carrying frames bypass timing entirely.
+	if f.Type != framing.FramePadding && f.Type != framing.FrameKeepAlive {
+		return tw.Next.WriteFrame(f)
+	}
+
 	tw.mu.Lock()
 	mode := tw.Selector.Select(tw.byteRate, tw.streamCount)
 	tw.mu.Unlock()

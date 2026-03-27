@@ -106,9 +106,8 @@ func TestPipeline_StealthMode_HasDelay(t *testing.T) {
 	start := time.Now()
 	for i := 0; i < 5; i++ {
 		f := &framing.Frame{
-			Type:     framing.FrameData,
-			StreamID: 1,
-			Payload:  make([]byte, 50),
+			Type:    framing.FramePadding,
+			Padding: make([]byte, 50),
 		}
 		if err := timed.WriteFrame(f); err != nil {
 			t.Fatalf("WriteFrame[%d]: %v", i, err)
@@ -144,9 +143,8 @@ func TestPipeline_AdaptiveSwitch(t *testing.T) {
 	start1 := time.Now()
 	for i := 0; i < 3; i++ {
 		f := &framing.Frame{
-			Type:     framing.FrameData,
-			StreamID: 1,
-			Payload:  make([]byte, 50),
+			Type:    framing.FramePadding,
+			Padding: make([]byte, 50),
 		}
 		if err := timed.WriteFrame(f); err != nil {
 			t.Fatalf("WriteFrame phase1[%d]: %v", i, err)
@@ -164,9 +162,8 @@ func TestPipeline_AdaptiveSwitch(t *testing.T) {
 	start2 := time.Now()
 	for i := 0; i < 3; i++ {
 		f := &framing.Frame{
-			Type:     framing.FrameData,
-			StreamID: 1,
-			Payload:  make([]byte, 50),
+			Type:    framing.FramePadding,
+			Padding: make([]byte, 50),
 		}
 		if err := timed.WriteFrame(f); err != nil {
 			t.Fatalf("WriteFrame phase2[%d]: %v", i, err)
