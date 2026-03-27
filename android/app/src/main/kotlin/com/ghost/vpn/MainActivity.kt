@@ -57,7 +57,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.ghost.vpn.theme.GhostTheme
 import kotlinx.coroutines.delay
@@ -194,8 +194,8 @@ fun ConnectionScreen(
     onSettingsClick: () -> Unit,
     isConfigured: Boolean = true
 ) {
-    val state by viewModel.state.collectAsStateWithLifecycle()
-    val logs by viewModel.logs.collectAsStateWithLifecycle()
+    val state by viewModel.state.collectAsState()
+    val logs by viewModel.logs.collectAsState()
     val context = LocalContext.current
 
     // Bridge: poll service companion to transition Connecting → Connected / Error
