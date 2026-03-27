@@ -9,7 +9,7 @@ import (
 
 func TestBuildServerAuth_EmptyClientPublicKey(t *testing.T) {
 	ac := config.AuthConfig{
-		ServerPrivateKey: "e858568789b3522748dfba5542d367ac7e7d672b6d221bdef72c6cfd4480e623",
+		ServerPrivateKey: "70f9bf7792fdf80fec2d11e5bdfe4199a461cc9376f2f2d160d843386c122a2a",
 		ClientPublicKey:  "",
 	}
 	_, err := buildServerAuth(ac)
@@ -24,7 +24,7 @@ func TestBuildServerAuth_EmptyClientPublicKey(t *testing.T) {
 func TestBuildServerAuth_InvalidServerPrivateKeyHex(t *testing.T) {
 	ac := config.AuthConfig{
 		ServerPrivateKey: "not-valid-hex",
-		ClientPublicKey:  "e858568789b3522748dfba5542d367ac7e7d672b6d221bdef72c6cfd4480e623",
+		ClientPublicKey:  "70f9bf7792fdf80fec2d11e5bdfe4199a461cc9376f2f2d160d843386c122a2a",
 	}
 	_, err := buildServerAuth(ac)
 	if err == nil {
@@ -37,7 +37,7 @@ func TestBuildServerAuth_InvalidServerPrivateKeyHex(t *testing.T) {
 
 func TestBuildServerAuth_InvalidClientPublicKeyHex(t *testing.T) {
 	ac := config.AuthConfig{
-		ServerPrivateKey: "e858568789b3522748dfba5542d367ac7e7d672b6d221bdef72c6cfd4480e623",
+		ServerPrivateKey: "70f9bf7792fdf80fec2d11e5bdfe4199a461cc9376f2f2d160d843386c122a2a",
 		ClientPublicKey:  "short",
 	}
 	_, err := buildServerAuth(ac)
@@ -51,8 +51,8 @@ func TestBuildServerAuth_InvalidClientPublicKeyHex(t *testing.T) {
 
 func TestBuildServerAuth_ValidKeys(t *testing.T) {
 	ac := config.AuthConfig{
-		ServerPrivateKey: "e858568789b3522748dfba5542d367ac7e7d672b6d221bdef72c6cfd4480e623",
-		ClientPublicKey:  "e09fed315c42f932f94cc3c53ab7fb839b1b5dc6eef59bd26998c9407894cb63",
+		ServerPrivateKey: "70f9bf7792fdf80fec2d11e5bdfe4199a461cc9376f2f2d160d843386c122a2a",
+		ClientPublicKey:  "4207bd1ed1cefb63199c431b48536767b6744a89613a85f5214b09d4d6dec360",
 	}
 	sa, err := buildServerAuth(ac)
 	if err != nil {
@@ -66,7 +66,7 @@ func TestBuildServerAuth_ValidKeys(t *testing.T) {
 func TestBuildServerAuth_DevKeyGeneration(t *testing.T) {
 	ac := config.AuthConfig{
 		ServerPrivateKey: "", // should trigger dev key generation
-		ClientPublicKey:  "e09fed315c42f932f94cc3c53ab7fb839b1b5dc6eef59bd26998c9407894cb63",
+		ClientPublicKey:  "4207bd1ed1cefb63199c431b48536767b6744a89613a85f5214b09d4d6dec360",
 	}
 	sa, err := buildServerAuth(ac)
 	if err != nil {

@@ -2,7 +2,7 @@ package shaping
 
 import (
 	"context"
-	"fmt"
+	"log/slog"
 	"math/rand"
 	"sync"
 	"time"
@@ -185,7 +185,7 @@ func (cg *CoverGenerator) injectKeepAlive() {
 	if err := cg.writer.WriteFrame(f); err != nil {
 		// Cover traffic errors are non-fatal; connection-level errors
 		// will be detected by the mux path.
-		_ = fmt.Errorf("cover: keepalive: %w", err)
+		slog.Debug("cover: keepalive write failed", "err", err)
 	}
 }
 
@@ -205,7 +205,7 @@ func (cg *CoverGenerator) injectAnalyticsPing() {
 		Payload:  payload,
 	}
 	if err := cg.writer.WriteFrame(f); err != nil {
-		_ = fmt.Errorf("cover: analytics: %w", err)
+		slog.Debug("cover: analytics write failed", "err", err)
 	}
 }
 
@@ -230,7 +230,7 @@ func (cg *CoverGenerator) injectMiniBurst() {
 			Payload:  payload,
 		}
 		if err := cg.writer.WriteFrame(f); err != nil {
-			_ = fmt.Errorf("cover: burst: %w", err)
+			slog.Debug("cover: burst write failed", "err", err)
 			return
 		}
 

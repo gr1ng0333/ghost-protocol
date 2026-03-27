@@ -321,7 +321,7 @@ shaping:
 
 // validHex64 returns a valid 64-char hex string (32 bytes).
 func validHex64() string {
-	return "e858568789b3522748dfba5542d367ac7e7d672b6d221bdef72c6cfd4480e623"
+	return "70f9bf7792fdf80fec2d11e5bdfe4199a461cc9376f2f2d160d843386c122a2a"
 }
 
 func TestClientConfig_Validate_Valid(t *testing.T) {
