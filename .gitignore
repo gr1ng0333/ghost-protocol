@@ -37,3 +37,4 @@ configs/client-stealth.yaml
 
 # Local binaries / diagnostics
 ghost-server-diag
+build/

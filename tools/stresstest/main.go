@@ -303,7 +303,7 @@ func scenarioSustained() {
 	buf := make([]byte, 256*1024) // 256KB read buffer
 
 	for time.Now().Before(deadline) {
-		resp, reqErr := client.Get("https://speed.hetzner.de/100MB.bin")
+		resp, reqErr := client.Get("https://proof.ovh.net/files/100Mb.dat")
 		if reqErr != nil {
 			fmt.Printf("  download error: %v\n", reqErr)
 			time.Sleep(2 * time.Second)
@@ -439,7 +439,7 @@ func scenarioParallel() {
 	fmt.Println("--- Scenario 5: Parallel Downloads ---")
 
 	const n = 5
-	const url = "https://speed.hetzner.de/10MB.bin"
+	const url = "https://proof.ovh.net/files/10Mb.dat"
 
 	type result struct {
 		bytes   int64
