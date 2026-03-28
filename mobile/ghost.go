@@ -97,7 +97,12 @@ type callbackHandler struct {
 
 func (h *callbackHandler) Enabled(_ context.Context, l slog.Level) bool { return l >= h.level }
 func (h *callbackHandler) Handle(_ context.Context, r slog.Record) error {
-	h.cb.Log(r.Level.String(), r.Message)
+	msg := r.Message
+	r.Attrs(func(a slog.Attr) bool {
+		msg += " " + a.Key + "=" + a.Value.String()
+		return true
+	})
+	h.cb.Log(r.Level.String(), msg)
 	return nil
 }
 func (h *callbackHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
@@ -295,20 +300,29 @@ func Start(fd int, configJSON string) (*Client, error) {
 		return nil, fmt.Errorf("ghost.Start: shared secret: %w", err)
 	}
 
-	// 6. Create Dialer — inject protectedDialer so every outbound TCP socket
+	// 6. Pre-resolve server address to IP so that reconnection attempts
+	// don't depend on DNS (which routes through the dead VPN tunnel on
+	// Android, causing reconnect to fail).
+	resolvedAddr, err := resolveAddr(cfg.ServerAddr)
+	if err != nil {
+		return nil, fmt.Errorf("ghost.Start: resolve %s: %w", cfg.ServerAddr, err)
+	}
+	slog.Info("ghost: resolved server address", "original", cfg.ServerAddr, "resolved", resolvedAddr)
+
+	// 7. Create Dialer — inject protectedDialer so every outbound TCP socket
 	// is protected via VpnService.protect() before connect().
 	h2cfg := transport.DefaultChromeH2Config()
 	h2cfg.NetDialer = protectedDialer()
 	h2cfg.ShapingMode = cfg.ShapingMode
 	dialer := transport.NewDialer(h2cfg, clientAuth)
 
-	// 7. Load shaping profile
+	// 8. Load shaping profile
 	profile, err := loadEmbeddedProfile()
 	if err != nil {
 		slog.Warn("shaping profile load failed, disabling shaping", "error", err)
 	}
 
-	// 8. Build shaping components
+	// 9. Build shaping components
 	mode := parseMode(cfg.ShapingMode)
 	sel := shaping.NewAdaptiveSelector(mode, cfg.AutoMode)
 	selProxy := &selectorProxy{sel: sel}
@@ -351,10 +365,10 @@ func Start(fd int, configJSON string) (*Client, error) {
 	cumulBytesSent := &atomic.Uint64{}
 	cumulBytesRecv := &atomic.Uint64{}
 
-	// 9. Create ConnManager
+	// 10. Create ConnManager
 	mgr := proxy.NewConnManager(proxy.ConnManagerConfig{
 		Dialer:     dialer,
-		ServerAddr: cfg.ServerAddr,
+		ServerAddr: resolvedAddr,
 		ServerSNI:  cfg.ServerSNI,
 		Pipeline: proxy.PipelineOpts{
 			Wrap:         wrap,
@@ -585,3 +599,26 @@ type muxStatsAdapter struct {
 func (a *muxStatsAdapter) ActiveStreamCount() int { return a.getMuxStats().ActiveStreams }
 func (a *muxStatsAdapter) TotalBytesSent() uint64 { return a.getMuxStats().BytesSent }
 func (a *muxStatsAdapter) TotalBytesRecv() uint64 { return a.getMuxStats().BytesRecv }
+
+// resolveAddr resolves a "host:port" address to "ip:port" using the
+// system DNS resolver BEFORE the VPN tunnel is active. This ensures
+// reconnection attempts can dial the server by IP without going through
+// the (possibly dead) VPN DNS path.
+func resolveAddr(addr string) (string, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", fmt.Errorf("split host/port: %w", err)
+	}
+	// If it's already an IP, return as-is.
+	if ip := net.ParseIP(host); ip != nil {
+		return addr, nil
+	}
+	ips, err := net.LookupHost(host)
+	if err != nil {
+		return "", fmt.Errorf("lookup %s: %w", host, err)
+	}
+	if len(ips) == 0 {
+		return "", fmt.Errorf("no addresses for %s", host)
+	}
+	return net.JoinHostPort(ips[0], port), nil
+}

@@ -259,6 +259,8 @@ func (d *h2Dialer) Dial(ctx context.Context, addr, sni string) (Conn, error) {
 		},
 		ConnectionFlow:    d.cfg.WindowUpdateSize,
 		PseudoHeaderOrder: d.cfg.PseudoHeaderOrder,
+		ReadIdleTimeout:   15 * time.Second,
+		PingTimeout:       15 * time.Second,
 	}
 
 	// 7. Create HTTP/2 ClientConn on top of the uTLS connection.

@@ -107,6 +107,14 @@ class MainActivity : ComponentActivity() {
                         ghost.Ghost.setLogCallback(object : ghost.LogCallback {
                             override fun log(level: String, message: String) {
                                 vm.addLog(level, message)
+                                // Forward to logcat for ADB monitoring.
+                                when (level) {
+                                    "DEBUG" -> android.util.Log.d("GoGhost", message)
+                                    "INFO"  -> android.util.Log.i("GoGhost", message)
+                                    "WARN"  -> android.util.Log.w("GoGhost", message)
+                                    "ERROR" -> android.util.Log.e("GoGhost", message)
+                                    else    -> android.util.Log.v("GoGhost", message)
+                                }
                             }
                         })
                     } catch (e: Throwable) {

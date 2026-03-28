@@ -622,6 +622,8 @@ func (s *ghostServer) handleGhost(ctx context.Context, conn *peekConn, chi *clie
 	h2srv := &http2.Server{
 		MaxUploadBufferPerConnection: 4 << 20, // 4MB connection-level flow control (default ~1MB)
 		MaxUploadBufferPerStream:     2 << 20, // 2MB per-stream flow control (default ~1MB)
+		ReadIdleTimeout:              60 * time.Second,
+		PingTimeout:                  15 * time.Second,
 	}
 	h2srv.ServeConn(tlsConn, &http2.ServeConnOpts{
 		Handler: handler,
