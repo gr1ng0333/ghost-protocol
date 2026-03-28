@@ -84,6 +84,7 @@ func (c *h2Conn) Recv(ctx context.Context, path string) (io.ReadCloser, error) {
 	req.Header.Set("X-Session-Token", c.token)
 	if c.shapingMode != "" {
 		req.Header.Set("X-Ghost-Mode", c.shapingMode)
+		slog.Info("DEBUG: sending mode header", "mode", c.shapingMode, "method", "GET")
 	}
 	req.Header[http.PHeaderOrderKey] = c.pho
 

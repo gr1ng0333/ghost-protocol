@@ -3,13 +3,17 @@ package shaping
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math"
 	"math/rand"
 	"os"
 	"sort"
+	"sync/atomic"
 
 	"ghost/internal/framing"
 )
+
+var padderFrameCount atomic.Int64
 
 // headerSize is the fixed overhead of a serialized Ghost frame:
 // Type(1) + StreamID(4) + PayloadLen(2) = 7 bytes.
@@ -199,7 +203,12 @@ type PadderFrameWriter struct {
 // In Balanced mode, frames are padded (resized) but noise injection is skipped.
 func (pw *PadderFrameWriter) WriteFrame(f *framing.Frame) error {
 	if pw.GetMode != nil {
-		switch pw.GetMode() {
+		mode := pw.GetMode()
+		count := padderFrameCount.Add(1)
+		if count%100 == 0 {
+			slog.Debug("DEBUG: padder", "mode", mode, "frame", count, "type", f.Type, "payloadLen", len(f.Payload))
+		}
+		switch mode {
 		case ModePerformance:
 			return pw.Next.WriteFrame(f)
 		case ModeBalanced:

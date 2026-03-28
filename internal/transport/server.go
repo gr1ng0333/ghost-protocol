@@ -500,10 +500,12 @@ func (s *ghostServer) handleGhost(ctx context.Context, conn *peekConn, chi *clie
 	// Wrap downPipe with bufio.Writer to batch the encoder's per-frame writes
 	// (header + payload + padding) into a single buffered pipe write.
 	downBuf := bufio.NewWriterSize(downPipe, 32*1024)
-	var writer framing.FrameWriter = &flushEncoderWriter{
+	// SyncFrameWriter protects the encoder from concurrent writes by
+	// mux writeLoop and CoverGenerator goroutines.
+	var writer framing.FrameWriter = &framing.SyncFrameWriter{W: &flushEncoderWriter{
 		enc: framing.NewEncoder(downBuf),
 		buf: downBuf,
-	}
+	}}
 	var reader framing.FrameReader = &framing.DecoderReader{Dec: framing.NewDecoder(upR)}
 
 	var timerWriter *shaping.TimerFrameWriter
@@ -523,9 +525,13 @@ func (s *ghostServer) handleGhost(ctx context.Context, conn *peekConn, chi *clie
 			GetMode: func() shaping.Mode {
 				// Prefer client-signaled mode for padding decisions.
 				if v := clientMode.Load(); v > 0 {
-					return shaping.Mode(v - 1)
+					m := shaping.Mode(v - 1)
+					slog.Debug("DEBUG: server padder GetMode", "clientMode", m, "raw", v)
+					return m
 				}
-				return selector.CurrentMode()
+				m := selector.CurrentMode()
+				slog.Debug("DEBUG: server padder GetMode fallback", "selectorMode", m)
+				return m
 			},
 		}
 		timerWriter = &shaping.TimerFrameWriter{

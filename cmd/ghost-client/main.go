@@ -93,7 +93,10 @@ func main() {
 
 		wrap = &mux.PipelineWrap{
 			WrapWriter: func(w framing.FrameWriter) framing.FrameWriter {
-				padded := &shaping.PadderFrameWriter{Padder: padder, Next: w, GetMode: selector.CurrentMode}
+				// SyncFrameWriter protects the encoder from concurrent
+				// writes by mux writeLoop and CoverGenerator goroutines.
+				sw := &framing.SyncFrameWriter{W: w}
+				padded := &shaping.PadderFrameWriter{Padder: padder, Next: sw, GetMode: selector.CurrentMode}
 				timerWriter = &shaping.TimerFrameWriter{
 					Timer: timer, Selector: selector, Next: padded,
 				}

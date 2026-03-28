@@ -340,7 +340,10 @@ func Start(fd int, configJSON string) (*Client, error) {
 
 		wrap = &mux.PipelineWrap{
 			WrapWriter: func(w framing.FrameWriter) framing.FrameWriter {
-				padded := &shaping.PadderFrameWriter{Padder: padder, Next: w, GetMode: sel.CurrentMode}
+				// SyncFrameWriter protects the encoder from concurrent
+				// writes by mux writeLoop and CoverGenerator goroutines.
+				sw := &framing.SyncFrameWriter{W: w}
+				padded := &shaping.PadderFrameWriter{Padder: padder, Next: sw, GetMode: sel.CurrentMode}
 				timerWriter = &shaping.TimerFrameWriter{
 					Timer: timer, Selector: selProxy, Next: padded,
 				}

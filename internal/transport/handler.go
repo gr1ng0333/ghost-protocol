@@ -67,10 +67,12 @@ func (h *ghostHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Apply client-requested shaping mode (once per session).
 	if h.clientMode != nil {
 		h.modeOnce.Do(func() {
-			if modeStr := r.Header.Get("X-Ghost-Mode"); modeStr != "" {
+			modeStr := r.Header.Get("X-Ghost-Mode")
+			slog.Info("DEBUG: received mode header", "mode", modeStr, "path", r.URL.Path)
+			if modeStr != "" {
 				if mode, ok := shaping.ParseMode(modeStr); ok {
 					h.clientMode.Store(int32(mode) + 1)
-					slog.Debug("ghost: client requested shaping mode", "mode", modeStr)
+					slog.Info("DEBUG: stored clientMode", "mode", modeStr, "modeInt", mode, "stored", int32(mode)+1)
 				}
 			}
 		})
