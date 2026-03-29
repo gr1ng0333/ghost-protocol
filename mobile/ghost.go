@@ -340,12 +340,12 @@ func Start(fd int, configJSON string) (*Client, error) {
 
 		wrap = &mux.PipelineWrap{
 			WrapWriter: func(w framing.FrameWriter) framing.FrameWriter {
-				// SyncFrameWriter protects the encoder from concurrent
-				// writes by mux writeLoop and CoverGenerator goroutines.
-				sw := &framing.SyncFrameWriter{W: w}
-				padded := &shaping.PadderFrameWriter{Padder: padder, Next: sw, GetMode: sel.CurrentMode}
+				padded := &shaping.PadderFrameWriter{Padder: padder, Next: w, GetMode: sel.CurrentMode}
+				// SyncFrameWriter protects both padder (non-thread-safe RNG)
+				// and encoder from concurrent mux writeLoop + CoverGenerator.
+				sw := &framing.SyncFrameWriter{W: padded}
 				timerWriter = &shaping.TimerFrameWriter{
-					Timer: timer, Selector: selProxy, Next: padded,
+					Timer: timer, Selector: selProxy, Next: sw,
 				}
 				wrappedWriter = timerWriter
 				return timerWriter
@@ -533,6 +533,15 @@ func (c *Client) Stats() string {
 		ms = c.getMuxStats()
 	}
 
+	var cumulSent uint64
+	if c.cumulBytesSent != nil {
+		cumulSent = c.cumulBytesSent.Load()
+	}
+	var cumulRecv uint64
+	if c.cumulBytesRecv != nil {
+		cumulRecv = c.cumulBytesRecv.Load()
+	}
+
 	s := struct {
 		Connected     bool   `json:"connected"`
 		Mode          string `json:"mode"`
@@ -543,8 +552,8 @@ func (c *Client) Stats() string {
 	}{
 		Connected:     healthy,
 		Mode:          modeStr,
-		BytesSent:     c.cumulBytesSent.Load() + ms.BytesSent,
-		BytesRecv:     c.cumulBytesRecv.Load() + ms.BytesRecv,
+		BytesSent:     cumulSent + ms.BytesSent,
+		BytesRecv:     cumulRecv + ms.BytesRecv,
 		ActiveStreams: ms.ActiveStreams,
 		UptimeSec:     int64(time.Since(started).Seconds()),
 	}

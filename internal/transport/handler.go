@@ -68,11 +68,9 @@ func (h *ghostHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h.clientMode != nil {
 		h.modeOnce.Do(func() {
 			modeStr := r.Header.Get("X-Ghost-Mode")
-			slog.Info("DEBUG: received mode header", "mode", modeStr, "path", r.URL.Path)
 			if modeStr != "" {
 				if mode, ok := shaping.ParseMode(modeStr); ok {
 					h.clientMode.Store(int32(mode) + 1)
-					slog.Info("DEBUG: stored clientMode", "mode", modeStr, "modeInt", mode, "stored", int32(mode)+1)
 				}
 			}
 		})

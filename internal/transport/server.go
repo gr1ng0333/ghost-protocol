@@ -500,12 +500,10 @@ func (s *ghostServer) handleGhost(ctx context.Context, conn *peekConn, chi *clie
 	// Wrap downPipe with bufio.Writer to batch the encoder's per-frame writes
 	// (header + payload + padding) into a single buffered pipe write.
 	downBuf := bufio.NewWriterSize(downPipe, 32*1024)
-	// SyncFrameWriter protects the encoder from concurrent writes by
-	// mux writeLoop and CoverGenerator goroutines.
-	var writer framing.FrameWriter = &framing.SyncFrameWriter{W: &flushEncoderWriter{
+	var writer framing.FrameWriter = &flushEncoderWriter{
 		enc: framing.NewEncoder(downBuf),
 		buf: downBuf,
-	}}
+	}
 	var reader framing.FrameReader = &framing.DecoderReader{Dec: framing.NewDecoder(upR)}
 
 	var timerWriter *shaping.TimerFrameWriter
@@ -525,17 +523,18 @@ func (s *ghostServer) handleGhost(ctx context.Context, conn *peekConn, chi *clie
 			GetMode: func() shaping.Mode {
 				// Prefer client-signaled mode for padding decisions.
 				if v := clientMode.Load(); v > 0 {
-					m := shaping.Mode(v - 1)
-					slog.Debug("DEBUG: server padder GetMode", "clientMode", m, "raw", v)
-					return m
+					return shaping.Mode(v - 1)
 				}
-				m := selector.CurrentMode()
-				slog.Debug("DEBUG: server padder GetMode fallback", "selectorMode", m)
-				return m
+				return selector.CurrentMode()
 			},
 		}
+		// SyncFrameWriter sits between timer and padder so that
+		// concurrent callers (mux writeLoop + CoverGenerator) are
+		// serialized before touching the padder's non-thread-safe RNG
+		// and the downstream encoder.
+		syncPad := &framing.SyncFrameWriter{W: padWriter}
 		timerWriter = &shaping.TimerFrameWriter{
-			Timer: timer, Selector: selector, Next: padWriter,
+			Timer: timer, Selector: selector, Next: syncPad,
 		}
 		writer = timerWriter
 

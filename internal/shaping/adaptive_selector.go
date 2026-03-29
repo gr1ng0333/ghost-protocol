@@ -1,7 +1,6 @@
 package shaping
 
 import (
-	"log/slog"
 	"sync/atomic"
 )
 
@@ -40,7 +39,6 @@ func NewAdaptiveSelector(defaultMode Mode, autoMode bool) *AdaptiveSelector {
 func (s *AdaptiveSelector) Select(byteRate int64, streamCount int) Mode {
 	if !s.autoMode {
 		s.lastMode.Store(int32(s.defaultMode))
-		slog.Debug("DEBUG: selector (fixed)", "mode", s.defaultMode, "byteRate", byteRate, "streams", streamCount)
 		return s.defaultMode
 	}
 
@@ -55,8 +53,6 @@ func (s *AdaptiveSelector) Select(byteRate int64, streamCount int) Mode {
 	default:
 		mode = ModeBalanced
 	}
-
-	slog.Debug("DEBUG: selector (auto)", "mode", mode, "byteRate", byteRate, "streams", streamCount)
 	s.lastMode.Store(int32(mode))
 	return mode
 }

@@ -93,12 +93,12 @@ func main() {
 
 		wrap = &mux.PipelineWrap{
 			WrapWriter: func(w framing.FrameWriter) framing.FrameWriter {
-				// SyncFrameWriter protects the encoder from concurrent
-				// writes by mux writeLoop and CoverGenerator goroutines.
-				sw := &framing.SyncFrameWriter{W: w}
-				padded := &shaping.PadderFrameWriter{Padder: padder, Next: sw, GetMode: selector.CurrentMode}
+				padded := &shaping.PadderFrameWriter{Padder: padder, Next: w, GetMode: selector.CurrentMode}
+				// SyncFrameWriter protects both padder (non-thread-safe RNG)
+				// and encoder from concurrent mux writeLoop + CoverGenerator.
+				sw := &framing.SyncFrameWriter{W: padded}
 				timerWriter = &shaping.TimerFrameWriter{
-					Timer: timer, Selector: selector, Next: padded,
+					Timer: timer, Selector: selector, Next: sw,
 				}
 				wrappedWriter = timerWriter
 				return timerWriter

@@ -1,15 +1,11 @@
 package shaping
 
 import (
-	"log/slog"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"ghost/internal/framing"
 )
-
-var timerFrameCount atomic.Int64
 
 // TimerFrameWriter wraps a Timer, Selector, and downstream FrameWriter.
 // It applies inter-frame timing delays based on the current shaping mode.
@@ -54,10 +50,6 @@ func (tw *TimerFrameWriter) WriteFrame(f *framing.Frame) error {
 	tw.mu.Lock()
 	mode := tw.Selector.Select(tw.byteRate, tw.streamCount)
 	tw.mu.Unlock()
-
-	if count := timerFrameCount.Add(1); count%100 == 0 {
-		slog.Debug("DEBUG: timer", "mode", mode, "byteRate", tw.byteRate, "streams", tw.streamCount, "frame", count)
-	}
 
 	if mode == ModePerformance {
 		return tw.Next.WriteFrame(f)
