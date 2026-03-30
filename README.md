@@ -20,11 +20,11 @@
 - `cmd/ghost-keygen` — key generation utility
 - `internal/` — transport, mux, framing, proxy, shaping, auth, config
 - `android/` — Android app project
-- `mobile/` — gomobile-facing bindings and mobile glue code
+- `mobile/` — gomobile-facing bindings, Android glue code, and local AAR build tooling
 - `configs/` — example configuration files
 - `deploy/` — deployment scripts and environment helpers
 - `docs/` — operator-facing documentation
-- `release/` — packaged release artifacts and example bundles
+- `release/` — release templates, sample configs, and packaging material (generated binaries stay out of git)
 - `research/` — research notes, measurements, and protocol experiments
 - `tools/` — profiling / analysis / stress helpers
 

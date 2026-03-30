@@ -132,15 +132,18 @@ cd mobile
 ./build.sh
 ```
 
-Produces `mobile/ghost.aar` — the Go library compiled for Android.
+Produces local generated artifacts in `mobile/` (`ghost.aar` and `ghost-sources.jar`). These build outputs are intentionally not tracked in git.
 
 ### Build APK
 
-Copy the AAR into the Android project:
+Copy the locally built AAR into the Android project:
 
 ```bash
+mkdir -p android/app/libs
 cp mobile/ghost.aar android/app/libs/
 ```
+
+`android/app/libs/` stays empty in git except for `.gitkeep`.
 
 Build the app:
 

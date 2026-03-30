@@ -38,3 +38,22 @@ build/
 
 # Keep archived diagnostic logs tracked when intentionally stored in docs
 !docs/diagnostics/vps_*.txt
+
+# Android/mobile generated artifacts
+android/app/libs/*.aar
+android/app/libs/*.jar
+!android/app/libs/.gitkeep
+mobile/*.aar
+mobile/*-sources.jar
+mobile/cov
+
+# Generated release binaries
+release/android/*.apk
+release/linux/ghost-client
+release/linux/ghost-keygen
+release/server/ghost-server
+release/server/ghost-keygen
+release/windows/*.exe
+
+# Tool build outputs
+tools/fpcheck/*.exe
